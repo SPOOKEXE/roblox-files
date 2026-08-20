@@ -65,13 +65,21 @@ inline void writeU64BE(uint8_t* p, uint64_t v) {
 // compress well: 0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4 ...
 
 inline uint32_t zigzagEncode32(int32_t v) {
-    return (static_cast<uint32_t>(v) << 1) ^ static_cast<uint32_t>(v >> 31);
+    // Conversion to unsigned is modular and well defined, and shifting an
+    // unsigned value is always defined. Building the sign mask from an
+    // unsigned shift avoids relying on right-shift of a negative signed
+    // integer, which is only guaranteed to be arithmetic from C++20.
+    const uint32_t bits = static_cast<uint32_t>(v);
+    const uint32_t signMask = ~(bits >> 31) + 1u;   // 0 when v >= 0, all ones when v < 0
+    return (bits << 1) ^ signMask;
 }
 inline int32_t zigzagDecode32(uint32_t v) {
     return static_cast<int32_t>((v >> 1) ^ (~(v & 1u) + 1u));
 }
 inline uint64_t zigzagEncode64(int64_t v) {
-    return (static_cast<uint64_t>(v) << 1) ^ static_cast<uint64_t>(v >> 63);
+    const uint64_t bits = static_cast<uint64_t>(v);
+    const uint64_t signMask = ~(bits >> 63) + 1ull;
+    return (bits << 1) ^ signMask;
 }
 inline int64_t zigzagDecode64(uint64_t v) {
     return static_cast<int64_t>((v >> 1) ^ (~(v & 1ull) + 1ull));
@@ -117,6 +125,8 @@ inline void writeF64LE(uint8_t* p, double v) {
 //
 // src holds `count` values of `width` bytes each, laid out normally.
 // dst receives the interleaved form: dst[b * count + i] == src[i * width + b].
+// src and dst must not overlap. Both functions read every source byte in an order
+// that an in-place call would already have overwritten.
 
 inline void interleave(const uint8_t* src, uint8_t* dst, std::size_t count, std::size_t width) {
     for (std::size_t i = 0; i < count; ++i)

@@ -118,3 +118,68 @@ TEST_CASE("golden vector: interleaved BrickColor numbers") {
     CHECK(readU32BE(flat + 4) == 37u);
     CHECK(readU32BE(flat + 8) == 1010u);
 }
+
+TEST_CASE("16- and 64-bit writers round-trip through their readers") {
+    uint8_t buf[8] = {};
+
+    writeU16LE(buf, 0x1234);
+    CHECK(buf[0] == 0x34);
+    CHECK(buf[1] == 0x12);
+    CHECK(readU16LE(buf) == 0x1234u);
+
+    writeU16BE(buf, 0x1234);
+    CHECK(buf[0] == 0x12);
+    CHECK(buf[1] == 0x34);
+    CHECK(readU16BE(buf) == 0x1234u);
+
+    writeU64LE(buf, 0x0102030405060708ull);
+    CHECK(buf[0] == 0x08);
+    CHECK(buf[7] == 0x01);
+    CHECK(readU64LE(buf) == 0x0102030405060708ull);
+
+    writeU64BE(buf, 0x0102030405060708ull);
+    CHECK(buf[0] == 0x01);
+    CHECK(buf[7] == 0x08);
+    CHECK(readU64BE(buf) == 0x0102030405060708ull);
+}
+
+TEST_CASE("plain little-endian IEEE float helpers round-trip") {
+    uint8_t buf[8] = {};
+
+    // 1.0f is 0x3F800000; little-endian on the wire puts 0x3F last.
+    writeF32LE(buf, 1.0f);
+    CHECK(buf[0] == 0x00);
+    CHECK(buf[3] == 0x3f);
+    CHECK(readF32LE(buf) == 1.0f);
+
+    // 1.0 is 0x3FF0000000000000.
+    writeF64LE(buf, 1.0);
+    CHECK(buf[0] == 0x00);
+    CHECK(buf[7] == 0x3f);
+    CHECK(readF64LE(buf) == 1.0);
+
+    for (float v : {0.0f, -0.0f, -1234.5f, 3.4028235e38f}) {
+        writeF32LE(buf, v);
+        CHECK(readF32LE(buf) == v);
+    }
+    for (double v : {0.0, -0.0, 1.2345678901234567, -9.87654321e300}) {
+        writeF64LE(buf, v);
+        CHECK(readF64LE(buf) == v);
+    }
+}
+
+TEST_CASE("interleaving handles empty and single-value arrays") {
+    uint8_t dst[4] = {9, 9, 9, 9};
+    interleave(nullptr, dst, 0, 4);            // must not write or dereference
+    CHECK(dst[0] == 9);
+
+    const uint8_t one[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint8_t woven[4] = {};
+    interleave(one, woven, 1, 4);              // a single value is its own transpose
+    CHECK(std::vector<uint8_t>(woven, woven + 4) ==
+          std::vector<uint8_t>(one, one + 4));
+    uint8_t back[4] = {};
+    deinterleave(woven, back, 1, 4);
+    CHECK(std::vector<uint8_t>(back, back + 4) ==
+          std::vector<uint8_t>(one, one + 4));
+}
