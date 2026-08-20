@@ -1315,7 +1315,7 @@ Implementation notes that the tests pin down:
 - `setParent` removes the child from its old parent's `children` (or from `roots_`), then appends to the new parent's `children` (or to `roots_`). Use `std::find` plus erase; children vectors are short.
 - `setProperty` interns the name, binary-searches `properties` by `NameId`, and either assigns in place or inserts at the lower-bound position so the vector stays sorted.
 - `getProperty` binary-searches; returns `nullptr` when the name is not interned at all.
-- `postOrder` iterates `roots_` and runs an explicit stack (not recursion — a 734k-instance file can nest deeply enough to overflow the call stack). Reserve `instances_.size()` up front.
+- `postOrder` iterates `roots_` and runs an explicit stack (not recursion, because a 734k-instance file can nest deeply enough to overflow the call stack). Reserve `instances_.size()` up front.
 
 - [ ] **Step 5: Run the tests**
 
@@ -1489,7 +1489,7 @@ Implementation notes:
 - `readFileHeader` checks size, magic, signature, then version, returning `BadMagic` / `BadVersion` / `Truncated` with the failing offset. Class and instance counts are read as `u32` LE and rejected if the signed interpretation is negative.
 - `readChunk` reads the 16-byte header, validates `cursor + headerSize + bodyLength <= size`, then either copies the body or decompresses it. Cap `uncompressedLength` at a `kMaxChunkSize` of 512 MiB and return `Malformed` above that, so a corrupt length cannot trigger a giant allocation before any data is read.
 - Decompression dispatch: if the first four body bytes are `28 b5 2f fd`, call `ZSTD_decompress`; else `LZ4_decompress_safe`. Both must return exactly `uncompressedLength`; anything else is `ErrorCode::Compression`.
-- `writeChunk` with `Compression::None` writes compressed length `0`. Otherwise it compresses, and **falls back to storing the payload uncompressed if the compressed form is not smaller** — a chunk larger than its input wastes space and Roblox reads uncompressed chunks fine.
+- `writeChunk` with `Compression::None` writes compressed length `0`. Otherwise it compresses, and **falls back to storing the payload uncompressed if the compressed form is not smaller**. A chunk larger than its input wastes space, and Roblox reads uncompressed chunks fine.
 - `LZ4_compress_default` produces the raw block format Roblox expects; do not use the frame API (`LZ4F_*`), which would prepend a frame magic and break Roblox's sniffing.
 
 - [ ] **Step 4: Run the tests**
@@ -1840,7 +1840,7 @@ git commit -m "feat: add binary codecs for scalar property types"
 | Type | ID | Component arrays, in order |
 |:--|:--|:--|
 | UDim | `0x06` | `Scale` (Float32), `Offset` (Int32) |
-| UDim2 | `0x07` | `X.Scale`, `Y.Scale`, `X.Offset`, `Y.Offset` — note scales precede offsets |
+| UDim2 | `0x07` | `X.Scale`, `Y.Scale`, `X.Offset`, `Y.Offset` (scales precede offsets) |
 | Ray | `0x08` | none: six little-endian IEEE `f32` per value, in sequence |
 | Color3 | `0x0c` | `R`, `G`, `B` (Float32) |
 | Vector2 | `0x0d` | `X`, `Y` (Float32) |
@@ -2176,13 +2176,13 @@ struct RawChunk {
 
 **Decoding order.** The decoder makes a single forward pass and handles chunks as it meets them:
 
-1. `META` — append each key/value pair to `dom.metadata()`.
-2. `SSTR` — read `version` (`u32`, must be 0), `count` (`u32`), then `count` records of 16 raw key bytes plus a length-prefixed string. Store as `SharedString{key, value}` in a local table handed to the codecs via `CodecContext`.
-3. `INST` — read `classId`, `className`, `objectFormat`, `instanceCount`, the accumulated referent array, and the service markers when `objectFormat == 1`. Create that many instances in the `Dom`, record `classId -> {className, vector<InstanceId>}`, and record `fileReferent -> InstanceId` in the referent map.
-4. `PROP` — read `classId`, `propertyName`, `typeId`. If `typeId` is unknown, store the whole decompressed payload as a `RawChunk` named `PROP` with `className` set, and continue. Otherwise decode `instanceCount` values and assign them positionally to that class's instances.
-5. `PRNT` — read `version` (must be 0), `count`, then the child and parent referent arrays, and call `dom.setParent` for each pair in file order.
-6. `END` — stop.
-7. Anything else — store as a `RawChunk` and continue.
+1. `META`: append each key/value pair to `dom.metadata()`.
+2. `SSTR`: read `version` (`u32`, must be 0), `count` (`u32`), then `count` records of 16 raw key bytes plus a length-prefixed string. Store as `SharedString{key, value}` in a local table handed to the codecs via `CodecContext`.
+3. `INST`: read `classId`, `className`, `objectFormat`, `instanceCount`, the accumulated referent array, and the service markers when `objectFormat == 1`. Create that many instances in the `Dom`, record `classId -> {className, vector<InstanceId>}`, and record `fileReferent -> InstanceId` in the referent map.
+4. `PROP`: read `classId`, `propertyName`, `typeId`. If `typeId` is unknown, store the whole decompressed payload as a `RawChunk` named `PROP` with `className` set, and continue. Otherwise decode `instanceCount` values and assign them positionally to that class's instances.
+5. `PRNT`: read `version` (must be 0), `count`, then the child and parent referent arrays, and call `dom.setParent` for each pair in file order.
+6. `END`: stop.
+7. Anything else: store as a `RawChunk` and continue.
 
 Then, as a final pass, walk every property of every instance and rewrite `Ref` and `Content`-object values from file referents to `InstanceId`s. Deferring this is necessary because a `Ref` may point at an instance whose `INST` chunk has not been read yet.
 
@@ -2668,7 +2668,7 @@ git commit -m "feat: encode a Dom to binary rbxl and rbxm files"
   - `Result<std::vector<uint8_t>> rbxl::xml::base64Decode(const std::string&);`
   - `Result<Dom> rbxl::xml::decode(const char* data, size_t size);`
 
-**Parsing setup.** Load with `pugi::xml_document::load_buffer_inplace_own` so the 153 MB place is not copied, and with parse flags `pugi::parse_default | pugi::parse_ws_pcdata_single`. That last flag is required: without it pugixml discards whitespace-only text nodes, and `ProtectedString` (script source) must keep its contents byte for byte. Skip any leading comment or processing instruction before `<roblox>` — real files in the wild begin with one.
+**Parsing setup.** Load with `pugi::xml_document::load_buffer_inplace_own` so the 153 MB place is not copied, and with parse flags `pugi::parse_default | pugi::parse_ws_pcdata_single`. That last flag is required: without it pugixml discards whitespace-only text nodes, and `ProtectedString` (script source) must keep its contents byte for byte. Skip any leading comment or processing instruction before `<roblox>`, because real files in the wild begin with one.
 
 **The element-name trap.** Element names do not reliably identify types. Three renames are standard (`BrickColor` serialises as `int`, `CFrame` as `CoordinateFrame`, `Enum` as `token`), and third-party writers use stale names: the sample place in `temp/` writes the legacy `ContentId` type under the element name `Content`. Disambiguate structurally, on the child element:
 
@@ -3310,7 +3310,7 @@ std::vector<uint8_t> serializeMaterialColors(const std::vector<Color3uint8>&);
 }  // namespace rbxl::blob
 ```
 
-**Attribute blob format:** a `u32` count, then that many records of `String` name (`u32` length prefix plus bytes), a `u8` type, and a value. **All integers and floats are little-endian and untransformed** — this format shares nothing with the chunk format's interleaving or Roblox float layout. The type ids are their own set:
+**Attribute blob format:** a `u32` count, then that many records of `String` name (`u32` length prefix plus bytes), a `u8` type, and a value. **All integers and floats are little-endian and untransformed**. This format shares nothing with the chunk format's interleaving or Roblox float layout. The type ids are their own set:
 
 | Type | ID | Type | ID |
 |:--|:--|:--|:--|
