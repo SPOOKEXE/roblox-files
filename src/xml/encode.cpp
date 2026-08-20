@@ -185,6 +185,13 @@ void writeFont(pugi::xml_node n, const Font& f) {
 // XML layout is bytes 0-7 Random (u64) rotated left one bit, 8-11 Time (u32),
 // 12-15 Index (u32): the inverse of decode.cpp's parseUniqueId, which rotates
 // right to undo this on the way in.
+// VERIFY: the one-bit left rotation on Random is taken from the same
+// spec-reading as decode.cpp's parseUniqueId (see the longer note there), not
+// from an observed file -- no file in temp/ contains a UniqueId, so this
+// rotation direction has not been checked against a real Roblox-Studio round
+// trip in either format. encode-then-decode is self-consistent by
+// construction (this rotates left, parseUniqueId rotates right), which is
+// all today's tests can confirm.
 std::string uniqueIdHex(const UniqueId& u) {
     uint8_t bytes[16];
     bit::writeU64BE(bytes, rotl64(static_cast<uint64_t>(u.random)));
@@ -231,7 +238,11 @@ void writeContent(pugi::xml_node n, const Content& c) {
     }
 }
 
+}  // namespace
+
 // --- Property dispatch -----------------------------------------------------
+// Declared in encode.hpp, not file-local, so the mapping test below can call
+// it directly instead of duplicating it (see the header for the full note).
 
 // The element name each VariantType is written under. Mirrors
 // decode.cpp's elementTypeTable in the opposite direction, plus Content and
@@ -286,6 +297,8 @@ bool elementNameFor(VariantType type, const char*& outName) {
         default: return false;
     }
 }
+
+namespace {
 
 void writeProperty(pugi::xml_node propsNode, InstanceId ownerId, const std::string& name,
                     const Variant& value, std::map<std::string, std::string>& sharedStrings,

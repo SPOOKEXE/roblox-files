@@ -336,7 +336,10 @@ Variant decodeContentLike(const pugi::xml_node& n,
     return Content{};
 }
 
+}  // namespace
+
 // --- Property dispatch -----------------------------------------------------
+// Declared in decode.hpp (see there for why it is not file-local).
 
 const std::unordered_map<std::string_view, VariantType>& elementTypeTable() {
     static const std::unordered_map<std::string_view, VariantType> kTable = {
@@ -381,6 +384,8 @@ const std::unordered_map<std::string_view, VariantType>& elementTypeTable() {
     };
     return kTable;
 }
+
+namespace {
 
 Variant decodeByType(VariantType type, const pugi::xml_node& n,
                       const std::unordered_map<std::string, InstanceId>& referents,

@@ -1,6 +1,7 @@
 #pragma once
 #include <rbxl/result.hpp>
 #include <rbxl/dom.hpp>
+#include <rbxl/variant.hpp>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,15 @@ struct EncodeDiagnostics {
 // `convert` can report what did not survive the trip.
 Result<std::string> encode(const Dom& dom, bool pretty = true,
                             EncodeDiagnostics* diagnostics = nullptr);
+
+// The element name `type` is written under, or false if it has none (Nil,
+// and the handful of VariantType alternatives with no entry in Appendix
+// A.3). See encode.cpp for the full mapping. Exposed here, rather than kept
+// file-local, solely so tests can check it against decode.hpp's
+// elementTypeTable() directly instead of maintaining a second copy of the
+// mapping. Not part of the library's public interface; nothing outside this
+// source tree should call it.
+bool elementNameFor(VariantType type, const char*& outName);
 
 }  // namespace xml
 }  // namespace rbxl
