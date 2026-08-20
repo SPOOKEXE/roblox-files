@@ -135,6 +135,15 @@ TEST_CASE("Ref elements resolve, and null means no value") {
     CHECK(std::get<Ref>(*dom.getProperty(1, "Value")).target == kNoInstance);
 }
 
+TEST_CASE("a Ref naming an undefined referent decodes successfully as kNoInstance, "
+          "not an error (deliberate: real files reference instances outside the saved set)") {
+    Dom dom = decodeOk(
+        "<roblox version=\"4\">"
+        "<Item class=\"ObjectValue\" referent=\"RBXA\"><Properties>"
+        "<Ref name=\"Value\">RBXNOWHERE</Ref></Properties></Item></roblox>");
+    CHECK(std::get<Ref>(*dom.getProperty(0, "Value")).target == kNoInstance);
+}
+
 TEST_CASE("SharedStrings resolve through the file's table") {
     Dom dom = decodeOk(
         "<roblox version=\"4\">"
@@ -194,4 +203,32 @@ TEST_CASE("corpus: the large XML place decodes") {
     CHECK(sawFont);
     CHECK(sawSecurity);
     CHECK(sawOptionalCFrame);
+
+    // Both Content shapes exist independently in this file under the same
+    // `Content` element name, so a decoder that had the disambiguation
+    // reversed would still find at least one of each type above and pass
+    // the checks so far. Pin the direction itself: `Texture` is written
+    // 2,652 times in the corpus, always as the legacy <url> shape, and must
+    // decode as ContentId; `EmissiveMaskContent` is written once, as the
+    // modern <uri> shape, and must decode as Content.
+    bool foundLegacyTexture = false, foundModernEmissiveMask = false;
+    for (InstanceId id = 0; id < dom.instanceCount(); ++id) {
+        if (const Variant* texture = dom.getProperty(id, "Texture")) {
+            foundLegacyTexture = true;
+            CHECK(variantTypeOf(*texture) == VariantType::ContentId);
+            if (const ContentId* cid = std::get_if<ContentId>(texture)) {
+                CHECK(!cid->url.empty());
+            }
+        }
+        if (const Variant* mask = dom.getProperty(id, "EmissiveMaskContent")) {
+            foundModernEmissiveMask = true;
+            CHECK(variantTypeOf(*mask) == VariantType::Content);
+            if (const Content* c = std::get_if<Content>(mask)) {
+                CHECK(c->sourceType == Content::SourceType::Uri);
+                CHECK(!c->uri.empty());
+            }
+        }
+    }
+    CHECK(foundLegacyTexture);
+    CHECK(foundModernEmissiveMask);
 }

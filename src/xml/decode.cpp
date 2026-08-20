@@ -126,6 +126,16 @@ bool parseHex16(const char* text, uint8_t out[16]) {
     return hi < 0 && n == 16;
 }
 
+// A referent string that names no Item resolves to kNoInstance rather than
+// failing the parse. This is deliberate and differs from the binary decoder,
+// which treats a dangling referent as Malformed. The formats are not
+// equivalent here: binary referents are file-local integers and Roblox
+// writes -1 for "no value", so a dangling one is genuine corruption. XML
+// referents are arbitrary strings, and third-party writers emit references
+// to instances outside the saved set as a matter of course. The 153MB
+// corpus place used by this project's tests contains 114 such referents
+// across 13,170 distinct non-null Ref targets; rejecting them would make
+// real files unreadable.
 InstanceId resolveRef(const char* text,
                        const std::unordered_map<std::string, InstanceId>& referents) {
     if (std::strcmp(text, "null") == 0) return kNoInstance;
