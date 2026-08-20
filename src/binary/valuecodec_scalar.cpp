@@ -499,8 +499,7 @@ Result<std::vector<Variant>> decodeValueArray(TypeId type, const uint8_t* data, 
         case TypeId::Bytecode: return decodeStringLike(data, size, count, true);
         case TypeId::SecurityCapabilities: return decodeSecurityCapabilities(data, size, count);
         default:
-            return makeError(ErrorCode::UnsupportedType,
-                              "value array type not implemented by the scalar codec");
+            return detail::decodeStructValueArray(type, data, size, count, ctx);
     }
 }
 
@@ -524,8 +523,7 @@ Status encodeValueArray(TypeId type, const std::vector<Variant>& values,
         case TypeId::Bytecode: return encodeStringLike(values, out, true);
         case TypeId::SecurityCapabilities: return encodeSecurityCapabilities(values, out);
         default:
-            return makeError(ErrorCode::UnsupportedType,
-                              "value array type not implemented by the scalar codec");
+            return detail::encodeStructValueArray(type, values, out, ctx);
     }
 }
 

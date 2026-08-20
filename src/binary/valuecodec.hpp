@@ -135,5 +135,17 @@ Status encodeValueArray(TypeId type, const std::vector<Variant>& values,
 // file) from "known but not yet handled" (ErrorCode::UnsupportedType).
 bool isKnownTypeId(uint8_t id);
 
+// Implemented in valuecodec_struct.cpp: the composite/struct type ids
+// (UDim, UDim2, Ray, Color3, Vector2, Vector3, CFrame, NumberSequence,
+// ColorSequence, NumberRange, Rect, PhysicalProperties, OptionalCFrame,
+// UniqueId, Font, Content). valuecodec_scalar.cpp's dispatch falls through
+// to these for every id its own switch does not handle.
+namespace detail {
+Result<std::vector<Variant>> decodeStructValueArray(TypeId type, const uint8_t* data, size_t size,
+                                                      size_t count, const CodecContext& ctx);
+Status encodeStructValueArray(TypeId type, const std::vector<Variant>& values,
+                               std::vector<uint8_t>& out, const CodecContext& ctx);
+}  // namespace detail
+
 }  // namespace binary
 }  // namespace rbxl
