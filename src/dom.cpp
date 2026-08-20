@@ -24,10 +24,17 @@ const std::string& StringPool::name(NameId id) const {
     return names_[id];
 }
 
+void Dom::reserve(std::size_t instanceCount) {
+    instances_.reserve(instanceCount);
+    roots_.reserve(instanceCount);
+    rootIndex_.reserve(instanceCount);
+}
+
 InstanceId Dom::create(std::string className) {
     InstanceId id = static_cast<InstanceId>(instances_.size());
     Instance& inst = instances_.emplace_back();
     inst.className = std::move(className);
+    rootIndex_.emplace(id, roots_.size());
     roots_.push_back(id);
     return id;
 }
@@ -40,13 +47,25 @@ const Instance& Dom::at(InstanceId id) const {
     return instances_[id];
 }
 
+void Dom::removeRoot(InstanceId id) {
+    auto it = rootIndex_.find(id);
+    if (it == rootIndex_.end()) {
+        return;
+    }
+    const std::size_t slot = it->second;
+    const std::size_t last = roots_.size() - 1;
+    if (slot != last) {
+        roots_[slot] = roots_[last];
+        rootIndex_[roots_[slot]] = slot;
+    }
+    roots_.pop_back();
+    rootIndex_.erase(it);
+}
+
 void Dom::setParent(InstanceId child, InstanceId parent) {
     InstanceId oldParent = instances_[child].parent;
     if (oldParent == kNoInstance) {
-        auto it = std::find(roots_.begin(), roots_.end(), child);
-        if (it != roots_.end()) {
-            roots_.erase(it);
-        }
+        removeRoot(child);
     } else {
         auto& siblings = instances_[oldParent].children;
         auto it = std::find(siblings.begin(), siblings.end(), child);
@@ -57,6 +76,7 @@ void Dom::setParent(InstanceId child, InstanceId parent) {
 
     instances_[child].parent = parent;
     if (parent == kNoInstance) {
+        rootIndex_[child] = roots_.size();
         roots_.push_back(child);
     } else {
         instances_[parent].children.push_back(child);

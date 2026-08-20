@@ -37,12 +37,17 @@ struct Instance {
 // using future Roblox types survive a load/save round-trip.
 struct RawChunk {
     char name[4] = {0, 0, 0, 0};
+    std::string className;       // set for preserved PROP chunks; empty otherwise
     std::vector<uint8_t> data;   // decompressed payload
 };
 
 class Dom {
 public:
     // --- Instances ---------------------------------------------------------
+    // Reserves capacity for `instanceCount` instances up front. Purely a
+    // performance hint for a decoder that knows the file header's count in
+    // advance; correctness never depends on having called it.
+    void reserve(std::size_t instanceCount);
     InstanceId create(std::string className);
     Instance& at(InstanceId id);
     const Instance& at(InstanceId id) const;
@@ -78,8 +83,18 @@ public:
     std::vector<InstanceId> postOrder() const;
 
 private:
+    // O(1) removal from roots_ (see setParent): every instance starts life
+    // as a root, so a decoder reparenting an entire file's worth of
+    // instances would otherwise pay the vector's O(size) find-and-erase once
+    // per instance, which is quadratic in instance count. rootIndex_ maps a
+    // root's InstanceId to its slot in roots_ so removal can swap-with-last
+    // and pop instead of shifting; this means roots_ does not preserve
+    // insertion order after a removal, only membership.
+    void removeRoot(InstanceId id);
+
     std::vector<Instance> instances_;
     std::vector<InstanceId> roots_;
+    std::unordered_map<InstanceId, std::size_t> rootIndex_;
     StringPool names_;
     std::vector<std::pair<std::string, std::string>> metadata_;
     std::vector<RawChunk> unknownChunks_;
