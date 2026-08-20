@@ -1,7 +1,7 @@
 #include <doctest.h>
 #include <rbxl/result.hpp>
-#include <rbxl/version.hpp>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace rbxl;
@@ -70,6 +70,22 @@ TEST_CASE("Result copy-assignment and move-assignment swap correctly") {
     CHECK(s.value() == "hello");
 }
 
-TEST_CASE("version reports the project version") {
-    CHECK(std::string(version()) == "0.1.0");
+TEST_CASE("Result's move-noexcept tracks T's move-noexcept rather than overclaiming") {
+    // A deliberately throwing (non-noexcept) move constructor.
+    struct ThrowingMove {
+        ThrowingMove() = default;
+        ThrowingMove(const ThrowingMove&) = default;
+        ThrowingMove(ThrowingMove&&) {}
+        ThrowingMove& operator=(ThrowingMove&&) { return *this; }
+    };
+    static_assert(!std::is_nothrow_move_constructible<ThrowingMove>::value,
+                  "fixture must actually have a throwing move for this test to mean anything");
+
+    static_assert(!std::is_nothrow_move_constructible<Result<ThrowingMove>>::value,
+                  "Result<T> must not claim nothrow-move when T's move can throw");
+    static_assert(std::is_nothrow_move_constructible<Result<int>>::value,
+                  "Result<int> should be nothrow-move-constructible");
+    static_assert(std::is_nothrow_move_constructible<Result<std::string>>::value,
+                  "Result<std::string> should be nothrow-move-constructible");
+    CHECK(true);  // the static_asserts above are the actual assertion; this just makes it a test case
 }

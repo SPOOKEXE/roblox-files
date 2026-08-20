@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <new>
 
@@ -43,11 +44,11 @@ public:
         if (hasValue_) new (&storage_.value) T(other.storage_.value);
         else new (&storage_.error) Error(other.storage_.error);
     }
-    Result(Result&& other) noexcept : hasValue_(other.hasValue_) {
+    Result(Result&& other) noexcept(kNothrowMove) : hasValue_(other.hasValue_) {
         if (hasValue_) new (&storage_.value) T(std::move(other.storage_.value));
         else new (&storage_.error) Error(std::move(other.storage_.error));
     }
-    Result& operator=(Result other) noexcept { swapWith(other); return *this; }
+    Result& operator=(Result other) noexcept(kNothrowMove) { swapWith(other); return *this; }
     ~Result() {
         if (hasValue_) storage_.value.~T();
         else storage_.error.~Error();
@@ -63,7 +64,14 @@ public:
     T valueOr(T fallback) const { return hasValue_ ? storage_.value : std::move(fallback); }
 
 private:
-    void swapWith(Result& other) noexcept {
+    // noexcept only to the extent the underlying moves actually are; do not
+    // claim more than T and Error can deliver. Referenced by the move
+    // constructor and operator= above via complete-class-context lookup.
+    static constexpr bool kNothrowMove =
+        std::is_nothrow_move_constructible<T>::value &&
+        std::is_nothrow_move_constructible<Error>::value;
+
+    void swapWith(Result& other) noexcept(kNothrowMove) {
         Result tmp(std::move(other));
         other.~Result();
         new (&other) Result(std::move(*this));
@@ -77,6 +85,13 @@ private:
         Error error;
     } storage_;
     bool hasValue_;
+
+    // Error holds only a std::string (nothrow-move-constructible on every
+    // conforming standard library); if that ever stops being true, the
+    // whole never-throws design of Result needs revisiting, not silent
+    // tolerance here.
+    static_assert(std::is_nothrow_move_constructible<Error>::value,
+                  "Error must be nothrow-move-constructible");
 };
 
 // Specialisation for operations that produce no value.

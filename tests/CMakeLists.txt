@@ -1,6 +1,7 @@
 add_executable(rbxl_tests
   main.cpp
   test_result.cpp
+  test_version.cpp
   test_deps.cpp)
 target_link_libraries(rbxl_tests PRIVATE rbxl rbxl_doctest rbxl_lz4 rbxl_zstd rbxl_pugixml)
 target_include_directories(rbxl_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
