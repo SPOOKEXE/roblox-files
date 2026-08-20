@@ -735,27 +735,9 @@ Status encodeFont(const std::vector<Variant>& values, std::vector<uint8_t>& out)
 // Referent (0x13) values are: zigzag, big-endian, interleaved width 4, then
 // summed. `readInt32Array`/`writeInt32Array` above already give us the
 // zigzag transform (unaccumulated) for the source-type array itself; the
-// referent sections need the additional running-sum step, so that part is
-// factored out separately rather than duplicated inline.
-
-Result<std::vector<uint32_t>> readReferentArray(Cursor& c, size_t count) {
-    RBXL_TRY(flat, readInterleaved(c, count, 4));
-    std::vector<uint32_t> raw(count);
-    for (size_t i = 0; i < count; ++i) {
-        raw[i] = static_cast<uint32_t>(bit::zigzagDecode32(bit::readU32BE(flat.data() + i * 4)));
-        if (i > 0) raw[i] += raw[i - 1];
-    }
-    return raw;
-}
-
-void writeReferentArray(std::vector<uint32_t> raw, std::vector<uint8_t>& out) {
-    for (size_t i = raw.size(); i-- > 1;) raw[i] -= raw[i - 1];
-    std::vector<uint8_t> flat(raw.size() * 4);
-    for (size_t i = 0; i < raw.size(); ++i) {
-        bit::writeU32BE(flat.data() + i * 4, bit::zigzagEncode32(static_cast<int32_t>(raw[i])));
-    }
-    writeInterleaved(flat, raw.size(), 4, out);
-}
+// referent sections need the additional running-sum step, which is
+// `readReferentDeltaArray`/`writeReferentDeltaArray` in valuecodec.hpp
+// (shared with plain Referent, TypeId::Referent, in valuecodec_scalar.cpp).
 
 Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, size_t count) {
     Cursor c(data, size);
@@ -777,7 +759,7 @@ Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, siz
     const uint32_t objectCount = bit::readU32LE(objectCountBytes);
     RBXL_TRY_VOID(
         requireCountFits(c, objectCount, 4, "Content object count exceeds remaining data"));
-    RBXL_TRY(objects, readReferentArray(c, objectCount));
+    RBXL_TRY(objects, readReferentDeltaArray(c, objectCount));
 
     RBXL_TRY(externalCountBytes, c.take(4));
     const uint32_t externalCount = bit::readU32LE(externalCountBytes);
@@ -785,7 +767,7 @@ Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, siz
                                     "Content external object count exceeds remaining data"));
     // ExternalObjectRefs cannot be meaningful once separated from their
     // origin file: decode just enough to skip past them, then discard.
-    RBXL_TRY(discardedExternal, readReferentArray(c, externalCount));
+    RBXL_TRY(discardedExternal, readReferentDeltaArray(c, externalCount));
     (void)discardedExternal;
 
     std::vector<Variant> out;
@@ -799,7 +781,8 @@ Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, siz
                 break;
             case 1:
                 if (uriIndex >= uris.size()) {
-                    return makeError(ErrorCode::Malformed, "Content URI section ran out of entries");
+                    return makeError(ErrorCode::Malformed, "Content URI section ran out of entries",
+                                      c.position());
                 }
                 value.sourceType = Content::SourceType::Uri;
                 value.uri = uris[uriIndex++];
@@ -807,7 +790,7 @@ Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, siz
             case 2: {
                 if (objectIndex >= objects.size()) {
                     return makeError(ErrorCode::Malformed,
-                                      "Content object section ran out of entries");
+                                      "Content object section ran out of entries", c.position());
                 }
                 value.sourceType = Content::SourceType::Object;
                 const uint32_t raw = objects[objectIndex++];
@@ -815,7 +798,7 @@ Result<std::vector<Variant>> decodeContent(const uint8_t* data, size_t size, siz
                 break;
             }
             default:
-                return makeError(ErrorCode::Malformed, "unknown Content source type");
+                return makeError(ErrorCode::Malformed, "unknown Content source type", c.position());
         }
         out.push_back(std::move(value));
     }
@@ -856,7 +839,7 @@ Status encodeContent(const std::vector<Variant>& values, std::vector<uint8_t>& o
 
     bit::writeU32LE(lenBytes, static_cast<uint32_t>(objects.size()));
     out.insert(out.end(), lenBytes, lenBytes + 4);
-    writeReferentArray(objects, out);
+    writeReferentDeltaArray(objects, out);
 
     // ExternalObjectRefs cannot be meaningful across files: always empty.
     bit::writeU32LE(lenBytes, 0);

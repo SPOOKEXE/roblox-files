@@ -118,6 +118,44 @@ inline void writeInterleaved(const std::vector<uint8_t>& flat, size_t count, siz
     bit::interleave(flat.data(), out.data() + base, count, width);
 }
 
+// Reads `count` referent values: Int32 encoding (zigzag, big-endian,
+// interleaved width 4), then accumulated into running totals. Shared by
+// plain Referent (0x13) and Content's object/external-object referent
+// sections, since both use this exact encoding.
+inline Result<std::vector<uint32_t>> readReferentDeltaArray(Cursor& c, size_t count) {
+    RBXL_TRY(flat, readInterleaved(c, count, 4));
+    // Accumulated in uint32_t: a crafted file can put adjacent deltas near
+    // INT32_MIN/INT32_MAX, and signed += there is undefined behaviour.
+    // Unsigned wraparound is well-defined and yields the identical bit
+    // pattern on every two's-complement target, so a signed cast taken only
+    // at the point each value is used changes nothing observable.
+    std::vector<uint32_t> raw(count);
+    for (size_t i = 0; i < count; ++i) {
+        raw[i] = static_cast<uint32_t>(bit::zigzagDecode32(bit::readU32BE(flat.data() + i * 4)));
+        if (i > 0) raw[i] += raw[i - 1];
+    }
+    return raw;
+}
+
+// Appends `raw` as an Int32-encoded interleaved array of successive
+// differences, reversing readReferentDeltaArray's accumulation.
+inline void writeReferentDeltaArray(std::vector<uint32_t> raw, std::vector<uint8_t>& out) {
+    // Differenced in uint32_t for the same reason decode accumulates in
+    // uint32_t: signed subtraction near INT32_MIN/INT32_MAX is undefined
+    // behaviour, while unsigned wraparound is well-defined and produces the
+    // identical bit pattern on any two's-complement target. kNoInstance's
+    // bit pattern (0xFFFFFFFF) already equals raw referent -1, so no branch
+    // is needed to fold the null case into `raw` before this runs.
+    for (size_t i = raw.size(); i-- > 1;) {
+        raw[i] -= raw[i - 1];
+    }
+    std::vector<uint8_t> flat(raw.size() * 4);
+    for (size_t i = 0; i < raw.size(); ++i) {
+        bit::writeU32BE(flat.data() + i * 4, bit::zigzagEncode32(static_cast<int32_t>(raw[i])));
+    }
+    writeInterleaved(flat, raw.size(), 4, out);
+}
+
 // Decodes one property's array of `count` values, stored as `size` bytes of
 // `data` in `type`'s on-disk encoding. `Ref` values carry the raw file
 // referent in `Ref::target`, not yet mapped to an InstanceId; a later stage
