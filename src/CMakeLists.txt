@@ -1,1 +1,1 @@
-target_sources(rbxl PRIVATE version.cpp result.cpp variant.cpp dom.cpp binary/chunk.cpp)
+target_sources(rbxl PRIVATE version.cpp result.cpp variant.cpp dom.cpp binary/chunk.cpp binary/valuecodec_scalar.cpp)
