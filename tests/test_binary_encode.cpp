@@ -31,9 +31,24 @@ static void putRefArray(std::vector<uint8_t>& v, const std::vector<int32_t>& ref
     v.insert(v.end(), woven.begin(), woven.end());
 }
 
-// A file with one Folder instance (classId 0) and two Part instances
-// (classId 1), plus one PROP chunk on Part using an unrecognised type id so
-// the decoder preserves it verbatim in dom.unknownChunks() instead of
+// File-level class ids for the fixture below, deliberately non-sequential
+// and out of first-appearance order (Part's file id, 9, is neither 0 nor 1).
+// decodeInst/decodeProp key purely off these numeric ids (see
+// decode.cpp:decodeInst, decodeProp), so nothing requires them to be
+// contiguous or to start at 0. This matters because groupByClass always
+// reassigns ids 0, 1, 2, ... by first-appearance-in-pool-order on encode; if
+// the fixture's original ids already happened to equal that reassignment
+// (e.g. Folder=0, Part=1), a test could pass even if the encoder's
+// class-id-patching line were deleted outright, since patching classId 1
+// with a freshly assigned classId 1 changes nothing. Using ids 5 and 9
+// guarantees the reassigned id (1, since Part is the second class Pool order
+// encounters) differs from the captured id (9), so the patch is observable.
+constexpr uint32_t kFixtureFolderClassId = 5;
+constexpr uint32_t kFixturePartClassId = 9;
+
+// A file with one Folder instance (file classId 5) and two Part instances
+// (file classId 9), plus one PROP chunk on Part using an unrecognised type
+// id so the decoder preserves it verbatim in dom.unknownChunks() instead of
 // decoding it into instance properties. Folder and Part deliberately have
 // different instance counts and names, so a test can tell whether a
 // preserved chunk's patched class id resolves back to the right class (Part,
@@ -45,17 +60,17 @@ static std::vector<uint8_t> buildFileWithPreservedProp() {
     writeFileHeader(file, header);
 
     std::vector<uint8_t> instFolder;
-    putU32(instFolder, 0); putString(instFolder, "Folder"); instFolder.push_back(0);
+    putU32(instFolder, kFixtureFolderClassId); putString(instFolder, "Folder"); instFolder.push_back(0);
     putU32(instFolder, 1); putRefArray(instFolder, {0});
     REQUIRE(writeChunk(file, "INST", instFolder, Compression::None, 0));
 
     std::vector<uint8_t> instPart;
-    putU32(instPart, 1); putString(instPart, "Part"); instPart.push_back(0);
+    putU32(instPart, kFixturePartClassId); putString(instPart, "Part"); instPart.push_back(0);
     putU32(instPart, 2); putRefArray(instPart, {1, 2});
     REQUIRE(writeChunk(file, "INST", instPart, Compression::None, 0));
 
     std::vector<uint8_t> prop;
-    putU32(prop, 1); putString(prop, "Mystery"); prop.push_back(0x7F);   // unknown type id
+    putU32(prop, kFixturePartClassId); putString(prop, "Mystery"); prop.push_back(0x7F);   // unknown type id
     prop.insert(prop.end(), {0xDE, 0xAD, 0xBE, 0xEF});                   // opaque payload
     REQUIRE(writeChunk(file, "PROP", prop, Compression::None, 0));
 
@@ -229,22 +244,47 @@ TEST_CASE("preserved PROP chunk survives re-encoding with a patched class id") {
     REQUIRE(std::memcmp(original.name, "PROP", 4) == 0);
     CHECK(original.className == "Part");
     CHECK(original.instanceCount == 2);
+    // Sanity check on the fixture itself: the captured chunk's first four
+    // bytes are still the file's original (non-sequential) class id.
+    REQUIRE(original.data.size() >= 4);
+    REQUIRE(bit::readU32LE(original.data.data()) == kFixturePartClassId);
 
-    auto encoded = encode(decoded.value());
+    // Encode uncompressed so the chunk stream's bytes can be inspected
+    // directly -- the same technique the PRNT ordering test above uses.
+    auto encoded = encode(decoded.value(), {Compression::None, 0, nullptr});
     REQUIRE(encoded);
+    const auto& bytes = encoded.value();
 
-    auto reDecoded = decode(encoded.value().data(), encoded.value().size());
+    // groupByClass assigns class ids by first appearance in Dom pool order:
+    // Folder was decoded from the first INST chunk in the fixture and gets
+    // the new class id 0; Part, decoded second, gets 1. That is the only
+    // value this re-emitted chunk's first four bytes can legitimately hold
+    // now, and kFixturePartClassId (9) guarantees it differs from the
+    // captured id -- so this assertion cannot pass merely because the
+    // fixture's original id already happened to match the reassignment.
+    constexpr uint32_t kExpectedNewPartClassId = 1;
+    REQUIRE(kExpectedNewPartClassId != kFixturePartClassId);
+
+    size_t at = std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())
+                    .find("PROP");
+    REQUIRE(at != std::string::npos);
+    const uint8_t* payload = bytes.data() + at + kChunkHeaderSize;
+    CHECK(bit::readU32LE(payload) == kExpectedNewPartClassId);
+    CHECK(bit::readU32LE(payload) != kFixturePartClassId);
+
+    // Independent, higher-level confirmation that the patched id actually
+    // resolves correctly: a fresh decode still attributes the chunk to Part
+    // with the right instance count, and everything past the 4-byte class
+    // id -- the property name, the unknown type id, and the opaque value
+    // bytes -- is untouched. This does not stand in for the direct byte
+    // check above; it is decode() actually consuming what was patched.
+    auto reDecoded = decode(bytes.data(), bytes.size());
     REQUIRE(reDecoded);
     REQUIRE(reDecoded.value().unknownChunks().size() == 1);
     const RawChunk& survived = reDecoded.value().unknownChunks()[0];
     CHECK(std::memcmp(survived.name, "PROP", 4) == 0);
-    // If the class id had been patched to the wrong value (e.g. left
-    // pointing at Folder, classId 0), this decode would have attributed the
-    // chunk to the wrong class and/or the wrong instance count.
     CHECK(survived.className == "Part");
     CHECK(survived.instanceCount == 2);
-    // Everything past the 4-byte class id -- the property name, the unknown
-    // type id, and the opaque value bytes -- must be untouched.
     REQUIRE(survived.data.size() == original.data.size());
     CHECK(std::equal(survived.data.begin() + 4, survived.data.end(), original.data.begin() + 4));
 }
