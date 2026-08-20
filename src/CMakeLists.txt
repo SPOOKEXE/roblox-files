@@ -1,1 +1,1 @@
-target_sources(rbxl PRIVATE version.cpp result.cpp variant.cpp)
+target_sources(rbxl PRIVATE version.cpp result.cpp variant.cpp dom.cpp)
