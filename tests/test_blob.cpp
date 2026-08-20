@@ -2,6 +2,7 @@
 #include <rbxl/blob.hpp>
 #include <rbxl/bitutil.hpp>
 #include <rbxl/rbxl.hpp>
+#include <set>
 #include <string>
 
 using namespace rbxl;
@@ -68,6 +69,21 @@ TEST_CASE("a truncated attribute blob is an error, not a crash") {
     CHECK_FALSE(parseAttributes(data));
 }
 
+TEST_CASE("a four-zero-byte blob (explicit count=0) parses to an empty map") {
+    // Real Roblox files always use a zero-length buffer for "no attributes"
+    // (see the corpus test below), never this four-byte "count = 0" form,
+    // but parseAttributes still accepts it: a declared count of zero simply
+    // yields no records. serializeAttributes then normalises this away and
+    // reports zero bytes rather than reproducing the four-byte input; see
+    // the comment on serializeAttributes for why that one-sided exception
+    // is deliberate and harmless.
+    std::vector<uint8_t> data{0x00, 0x00, 0x00, 0x00};
+    auto r = parseAttributes(data);
+    REQUIRE(r);
+    CHECK(r.value().empty());
+    CHECK(serializeAttributes(r.value()).empty());
+}
+
 // --- Real-data vectors, hand-decoded and confirmed against the corpus place ---
 
 TEST_CASE("real vector: single String attribute Material=Rock") {
@@ -125,6 +141,15 @@ TEST_CASE("real vector: single Bool attribute Toggle=true") {
 // --- Corpus gate: every AttributesSerialize blob in the real place file ------
 
 TEST_CASE("corpus: every AttributesSerialize blob in the real place round-trips") {
+    // 205,426 of the 208,347 AttributesSerialize blobs in this file are
+    // byte-identical empty payloads; re-parsing and re-serialising each one
+    // individually would just recheck "empty round-trips to empty" outright
+    // 205k times over, which is a smoke test wearing a corpus test's
+    // clothes. Walking every instance still proves the total blob count
+    // (the actual corpus gate, and cheap to check), but the expensive
+    // parse-and-round-trip assertion runs once per DISTINCT payload, which
+    // has identical defect-detection power since duplicate bytes cannot
+    // reach any code path the first copy did not.
     const std::string path =
         std::string(RBXL_TEST_DATA_DIR) + "/place 101949297449238 Build An Island.rbxlx";
     auto loaded = loadFile(path);
@@ -133,17 +158,14 @@ TEST_CASE("corpus: every AttributesSerialize blob in the real place round-trips"
 
     std::size_t attributeBlobCount = 0;
     std::size_t materialColorsCount = 0;
+    std::set<std::vector<uint8_t>> distinctAttributePayloads;
 
     for (InstanceId id = 0; id < dom.instanceCount(); ++id) {
         if (const Variant* attrsProp = dom.getProperty(id, "AttributesSerialize")) {
             const BinaryString* bs = std::get_if<BinaryString>(attrsProp);
             REQUIRE(bs);
             ++attributeBlobCount;
-
-            auto parsed = parseAttributes(bs->data);
-            CAPTURE(id);
-            REQUIRE(parsed);
-            CHECK(serializeAttributes(parsed.value()) == bs->data);
+            distinctAttributePayloads.insert(bs->data);
         }
 
         if (const Variant* mcProp = dom.getProperty(id, "MaterialColors")) {
@@ -161,4 +183,14 @@ TEST_CASE("corpus: every AttributesSerialize blob in the real place round-trips"
 
     CHECK(attributeBlobCount == 208347);
     CHECK(materialColorsCount == 1);
+
+    // distinctAttributePayloads naturally includes exactly one empty entry
+    // (the zero-length "no attributes" payload) alongside the 1,047 distinct
+    // non-empty ones, so no separate representative-empty case is needed.
+    for (const auto& payload : distinctAttributePayloads) {
+        CAPTURE(payload.size());
+        auto parsed = parseAttributes(payload);
+        REQUIRE(parsed);
+        CHECK(serializeAttributes(parsed.value()) == payload);
+    }
 }

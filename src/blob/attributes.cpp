@@ -434,7 +434,20 @@ std::vector<uint8_t> serializeAttributes(const AttributeMap& attributes) {
         ++count;
     }
     if (count == 0) {
-        return {};   // matches the empty-buffer convention parseAttributes reads
+        // An empty map serialises to zero bytes, not a four-byte "count = 0"
+        // record, because that is the form real Roblox places write for "no
+        // attributes" (confirmed against 205k+ AttributesSerialize
+        // properties in a real place file, all zero-length). parseAttributes
+        // is deliberately more lenient than this on the read side: an
+        // explicit four-zero-byte buffer also parses to an empty map (see
+        // its empty-count handling above), so that input is accepted on
+        // parse but normalised away here rather than reproduced byte for
+        // byte. This is a one-sided, deliberate exception to round-trip
+        // identity for that one synthetic input, and it cannot affect the
+        // library's lossless load/save guarantee: Dom keeps BinaryString
+        // values as raw, untouched bytes and never routes them through this
+        // codec unless a caller explicitly opts in via parseAttributes.
+        return {};
     }
     std::vector<uint8_t> out;
     appendU32(out, count);
