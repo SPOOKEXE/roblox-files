@@ -5,6 +5,7 @@
 #include <rbxl/variant.hpp>
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 // Column-oriented property array codecs. A PROP chunk holds one property for
@@ -93,6 +94,15 @@ private:
 // bytes in normal row-major order. Shared by every interleaved type so the
 // deinterleave step is written once.
 inline Result<std::vector<uint8_t>> readInterleaved(Cursor& c, size_t count, size_t width) {
+    // Guarded before the multiplication: count comes straight from a file
+    // field, and an unguarded count * width can wrap size_t (reachable
+    // wherever size_t is 32 bits, which the MSVC 2019+ target is). A wrapped
+    // product would let take() succeed against a small size while
+    // deinterleave() below still walks the un-multiplied count/width and
+    // writes past the buffer it was just handed.
+    if (width != 0 && count > (std::numeric_limits<std::size_t>::max)() / width) {
+        return makeError(ErrorCode::Malformed, "interleaved array size overflows size_t");
+    }
     RBXL_TRY(woven, c.take(count * width));
     std::vector<uint8_t> flat(count * width);
     bit::deinterleave(woven, flat.data(), count, width);

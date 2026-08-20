@@ -1,5 +1,6 @@
 #include <doctest.h>
 #include "binary/valuecodec.hpp"
+#include <limits>
 #include <vector>
 
 using namespace rbxl;
@@ -176,6 +177,21 @@ TEST_CASE("Truncated input is reported rather than read past the end") {
     auto r = decodeValueArray(TypeId::Int32, std::vector<uint8_t>{1, 2, 3, 4, 5}.data(), 5, 2, {});
     REQUIRE_FALSE(r);
     CHECK(r.error().code == ErrorCode::Truncated);
+}
+
+TEST_CASE("An interleaved array whose count*width overflows size_t is rejected") {
+    // width = 4 is Int32's interleave width. count is chosen so that
+    // count * 4 wraps size_t on THIS build (64-bit); the guard threshold
+    // scales with size_t's actual width, so this exercises the same
+    // arithmetic path a 32-bit size_t build would hit at a smaller count,
+    // without needing a 32-bit build or allocating anything large: `count`
+    // is just a number here, and the guard must fire before it is ever
+    // used to size or index a buffer. The data buffer stays 4 bytes.
+    const size_t count = (std::numeric_limits<size_t>::max)() / 4 + 1;
+    std::vector<uint8_t> data{0, 0, 0, 0};
+    auto r = decodeValueArray(TypeId::Int32, data.data(), data.size(), count, {});
+    REQUIRE_FALSE(r);
+    CHECK(r.error().code == ErrorCode::Malformed);
 }
 
 TEST_CASE("Unknown type ids are reported as such") {

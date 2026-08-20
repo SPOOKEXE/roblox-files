@@ -279,29 +279,41 @@ Status encodeEnum(const std::vector<Variant>& values, std::vector<uint8_t>& out)
 Result<std::vector<Variant>> decodeReferent(const uint8_t* data, size_t size, size_t count) {
     Cursor c(data, size);
     RBXL_TRY(flat, readInterleaved(c, count, 4));
-    std::vector<int32_t> raw(count);
+    // Accumulated in uint32_t: a crafted file can put adjacent deltas near
+    // INT32_MIN/INT32_MAX, and signed += there is undefined behaviour.
+    // Unsigned wraparound is well-defined and yields the identical bit
+    // pattern on every two's-complement target, so the int32_t cast below,
+    // taken only at the point each value is used, changes nothing observable.
+    std::vector<uint32_t> raw(count);
     for (size_t i = 0; i < count; ++i) {
-        raw[i] = bit::zigzagDecode32(bit::readU32BE(flat.data() + i * 4));
+        raw[i] = static_cast<uint32_t>(bit::zigzagDecode32(bit::readU32BE(flat.data() + i * 4)));
         if (i > 0) raw[i] += raw[i - 1];
     }
     std::vector<Variant> out;
     out.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        if (raw[i] == -1) {
+        const int32_t signedValue = static_cast<int32_t>(raw[i]);
+        if (signedValue == -1) {
             out.push_back(Ref{kNoInstance});
         } else {
-            out.push_back(Ref{static_cast<InstanceId>(raw[i])});
+            out.push_back(Ref{static_cast<InstanceId>(signedValue)});
         }
     }
     return out;
 }
 
 Status encodeReferent(const std::vector<Variant>& values, std::vector<uint8_t>& out) {
-    std::vector<int32_t> raw(values.size());
+    // Built and differenced in uint32_t for the same reason decode
+    // accumulates in uint32_t: signed subtraction near INT32_MIN/INT32_MAX
+    // is undefined behaviour, while unsigned wraparound is well-defined and
+    // produces the identical bit pattern on any two's-complement target.
+    // kNoInstance's bit pattern (0xFFFFFFFF) already equals raw referent -1,
+    // so no branch is needed to fold the null case into `raw`.
+    std::vector<uint32_t> raw(values.size());
     for (size_t i = 0; i < values.size(); ++i) {
         const Ref* r = std::get_if<Ref>(&values[i]);
         if (!r) return makeError(ErrorCode::InvalidArgument, "expected Ref value");
-        raw[i] = (r->target == kNoInstance) ? -1 : static_cast<int32_t>(r->target);
+        raw[i] = r->target;
     }
     // Successive differences, reversing the accumulation applied on decode.
     for (size_t i = raw.size(); i-- > 1;) {
@@ -309,7 +321,7 @@ Status encodeReferent(const std::vector<Variant>& values, std::vector<uint8_t>& 
     }
     std::vector<uint8_t> flat(raw.size() * 4);
     for (size_t i = 0; i < raw.size(); ++i) {
-        bit::writeU32BE(flat.data() + i * 4, bit::zigzagEncode32(raw[i]));
+        bit::writeU32BE(flat.data() + i * 4, bit::zigzagEncode32(static_cast<int32_t>(raw[i])));
     }
     writeInterleaved(flat, raw.size(), 4, out);
     return Status();
