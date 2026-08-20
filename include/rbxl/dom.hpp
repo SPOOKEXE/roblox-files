@@ -39,6 +39,12 @@ struct RawChunk {
     char name[4] = {0, 0, 0, 0};
     std::string className;       // set for preserved PROP chunks; empty otherwise
     std::vector<uint8_t> data;   // decompressed payload
+    // Instance count of `className` at the moment this PROP chunk was decoded
+    // (0 for non-PROP raw chunks, where it is unused). The chunk's value
+    // array is positional against that count, so the binary encoder re-emits
+    // it only when the class still has exactly this many instances; see the
+    // preserved-chunk rule in binary/encode.cpp.
+    std::size_t instanceCount = 0;
 };
 
 class Dom {

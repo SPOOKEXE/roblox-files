@@ -131,6 +131,7 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
         std::memcpy(raw.name, "PROP", 4);
         raw.className = info.className;
         raw.data = data;   // must copy: `data` is a reference into the caller's chunk
+        raw.instanceCount = info.ids.size();
         dom.unknownChunks().push_back(std::move(raw));
         return Status();
     }
