@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -52,7 +53,7 @@ Status decodeSstr(const std::vector<uint8_t>& data, std::vector<SharedString>& t
     RBXL_TRY(versionBytes, c.take(4));
     const uint32_t version = bit::readU32LE(versionBytes);
     if (version != 0) {
-        return makeError(ErrorCode::Malformed, "unsupported SSTR version", 0);
+        return makeError(ErrorCode::Malformed, "unsupported SSTR version", c.position());
     }
     RBXL_TRY(countBytes, c.take(4));
     const uint32_t count = bit::readU32LE(countBytes);
@@ -121,7 +122,7 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
     auto classIt = classes.find(classId);
     if (classIt == classes.end()) {
         return makeError(ErrorCode::Malformed, "PROP names a class id with no preceding INST chunk",
-                          0);
+                          c.position());
     }
     const ClassInfo& info = classIt->second;
 
@@ -139,7 +140,8 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
                                        valueBytes, info.ids.size(), ctx));
 
     if (values.size() != info.ids.size()) {
-        return makeError(ErrorCode::Malformed, "PROP value count does not match instance count", 0);
+        return makeError(ErrorCode::Malformed, "PROP value count does not match instance count",
+                          c.position());
     }
     // Moved, not copied: with ~14 million property values in the largest
     // corpus file, copying every decoded Variant into place would double
@@ -151,6 +153,47 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
     return Status();
 }
 
+// Disjoint-set over every instance a PRNT chunk can name, used to detect a
+// parent cycle in near-O(1) amortised time per entry. Each instance appears
+// as a child at most once across the whole chunk, so the edges PRNT adds
+// build a forest; "this edge would join two nodes already in the same
+// component" is exactly the definition of a cycle here. This replaces an
+// earlier approach that walked each entry's proposed ancestor chain by hand:
+// correct, but unbounded, since an acyclic straight-line chain never
+// short-circuits that walk and a chunk near the 512MB chunk cap can make it
+// quadratic in entry count.
+class DisjointSet {
+public:
+    explicit DisjointSet(std::size_t n) : parent_(n), rank_(n, 0) {
+        for (std::size_t i = 0; i < n; ++i) {
+            parent_[i] = static_cast<InstanceId>(i);
+        }
+    }
+
+    InstanceId find(InstanceId x) {
+        while (parent_[x] != x) {
+            parent_[x] = parent_[parent_[x]];   // path halving
+            x = parent_[x];
+        }
+        return x;
+    }
+
+    // Merges the sets containing `a` and `b`. Only ever called after the
+    // caller has confirmed find(a) != find(b); a cycle-forming edge is
+    // rejected before reaching here, not merged.
+    void unite(InstanceId a, InstanceId b) {
+        InstanceId ra = find(a);
+        InstanceId rb = find(b);
+        if (rank_[ra] < rank_[rb]) std::swap(ra, rb);
+        parent_[rb] = ra;
+        if (rank_[ra] == rank_[rb]) ++rank_[ra];
+    }
+
+private:
+    std::vector<InstanceId> parent_;
+    std::vector<uint8_t> rank_;
+};
+
 // PRNT: u8 version (must be 0), u32 count, then the child and parent
 // referent arrays, applied to `dom` in file order. A parent referent of -1
 // means root; any referent absent from `referents` is malformed.
@@ -158,17 +201,18 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
 // Cycle guard: `Dom::setParent` has no cycle protection of its own -- parenting
 // an instance under its own descendant would silently drop the whole subtree
 // from `roots_`, unreachable from any root, with no error (see Dom's
-// contract). Before applying entry (child, parent), this walks parent's
-// ancestor chain through the parent pointers already assigned by earlier
-// entries in this same PRNT chunk. Reaching `child` during that walk means
-// `child` is already an ancestor of `parent`, so setting child's parent to
-// `parent` would close a cycle; that entry is rejected as Malformed instead.
+// contract). Before applying entry (child, parent), this checks whether
+// `child` and `parent` are already in the same component of the forest built
+// from earlier entries in this same PRNT chunk (see DisjointSet above); if
+// so, adding this edge would close a cycle, and the entry is rejected as
+// Malformed instead. A self-parent (`parent == child`) is caught by the same
+// check with no special case: find(child) == find(child) is trivially true.
 Status decodePrnt(const std::vector<uint8_t>& data, Dom& dom,
                    const std::unordered_map<uint32_t, InstanceId>& referents) {
     Cursor c(data.data(), data.size());
     RBXL_TRY(versionBytes, c.take(1));
     if (versionBytes[0] != 0) {
-        return makeError(ErrorCode::Malformed, "unsupported PRNT version", 0);
+        return makeError(ErrorCode::Malformed, "unsupported PRNT version", c.position());
     }
     RBXL_TRY(countBytes, c.take(4));
     const uint32_t count = bit::readU32LE(countBytes);
@@ -176,10 +220,13 @@ Status decodePrnt(const std::vector<uint8_t>& data, Dom& dom,
     RBXL_TRY(childRaw, readReferentDeltaArray(c, count));
     RBXL_TRY(parentRaw, readReferentDeltaArray(c, count));
 
+    DisjointSet forest(dom.instanceCount());
+
     for (uint32_t i = 0; i < count; ++i) {
         auto childIt = referents.find(childRaw[i]);
         if (childIt == referents.end()) {
-            return makeError(ErrorCode::Malformed, "PRNT child referent not in referent map", 0);
+            return makeError(ErrorCode::Malformed, "PRNT child referent not in referent map",
+                              c.position());
         }
         InstanceId child = childIt->second;
 
@@ -188,23 +235,15 @@ Status decodePrnt(const std::vector<uint8_t>& data, Dom& dom,
             auto parentIt = referents.find(parentRaw[i]);
             if (parentIt == referents.end()) {
                 return makeError(ErrorCode::Malformed, "PRNT parent referent not in referent map",
-                                  0);
+                                  c.position());
             }
             parent = parentIt->second;
-        }
 
-        if (parent != kNoInstance) {
-            // Walk parent's ancestor chain as already established by this
-            // Dom. If it reaches `child`, applying this entry would parent
-            // `child` under its own descendant.
-            InstanceId walk = parent;
-            while (walk != kNoInstance) {
-                if (walk == child) {
-                    return makeError(ErrorCode::Malformed, "PRNT chunk contains a parent cycle", 0);
-                }
-                if (!dom.valid(walk)) break;
-                walk = dom.at(walk).parent;
+            if (forest.find(child) == forest.find(parent)) {
+                return makeError(ErrorCode::Malformed, "PRNT chunk contains a parent cycle",
+                                  c.position());
             }
+            forest.unite(child, parent);
         }
 
         dom.setParent(child, parent);
@@ -222,11 +261,19 @@ Status remapReferents(Dom& dom, const std::unordered_map<uint32_t, InstanceId>& 
     for (InstanceId id = 0; id < total; ++id) {
         Instance& inst = dom.at(id);
         for (auto& prop : inst.properties) {
+            // This pass runs once, after the whole file has been read, so a
+            // byte offset into the source no longer means anything here; the
+            // instance id and property name identify the failing value
+            // instead of a meaningless offset of 0.
             if (Ref* ref = std::get_if<Ref>(&prop.second)) {
                 if (ref->target == kNoInstance) continue;
                 auto it = referents.find(static_cast<uint32_t>(ref->target));
                 if (it == referents.end()) {
-                    return makeError(ErrorCode::Malformed, "Ref value names an unknown referent", 0);
+                    return makeError(ErrorCode::Malformed,
+                                      "Ref value names an unknown referent (instance " +
+                                          std::to_string(id) + ", property \"" +
+                                          dom.names().name(prop.first) + "\")",
+                                      0);
                 }
                 ref->target = it->second;
             } else if (Content* content = std::get_if<Content>(&prop.second)) {
@@ -235,7 +282,10 @@ Status remapReferents(Dom& dom, const std::unordered_map<uint32_t, InstanceId>& 
                 auto it = referents.find(static_cast<uint32_t>(content->object));
                 if (it == referents.end()) {
                     return makeError(ErrorCode::Malformed,
-                                      "Content object value names an unknown referent", 0);
+                                      "Content object value names an unknown referent (instance " +
+                                          std::to_string(id) + ", property \"" +
+                                          dom.names().name(prop.first) + "\")",
+                                      0);
                 }
                 content->object = it->second;
             }

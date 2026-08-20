@@ -1,6 +1,9 @@
 #include <doctest.h>
 #include <rbxl/dom.hpp>
 
+#include <algorithm>
+#include <vector>
+
 using namespace rbxl;
 
 TEST_CASE("StringPool interns names stably") {
@@ -104,4 +107,59 @@ TEST_CASE("postOrder visits descendants before ancestors") {
     // Spec states Roblox Studio writes: 2, 5, 6, 3, 7, 4, 1
     std::vector<InstanceId> expected{n2, n5, n6, n3, n7, n4, n1};
     CHECK(dom.postOrder() == expected);
+}
+
+// Dom::setParent removes a root via swap-with-last-element + pop (see
+// removeRoot in dom.cpp) rather than the vector-shifting erase an earlier
+// version used, so that removal is O(1) instead of O(roots_.size()). That
+// means roots() no longer preserves relative order across a removal, only
+// membership -- checked here as a set, not by position. It also means every
+// removal after the first can hit the swap branch, where the element that
+// used to be last takes the removed element's slot and its rootIndex_ entry
+// must be corrected to match; a stale entry there would misdirect (or,
+// out of bounds, corrupt) a later removal of that same swapped-in element.
+TEST_CASE("Removing a root swaps with the last element and keeps rootIndex_ consistent") {
+    Dom dom;
+    auto r0 = dom.create("Model");
+    auto r1 = dom.create("Model");
+    auto r2 = dom.create("Model");
+    auto r3 = dom.create("Model");
+    auto host = dom.create("Model");
+    REQUIRE(dom.roots().size() == 5);
+
+    auto rootSet = [&dom]() {
+        std::vector<InstanceId> ids(dom.roots().begin(), dom.roots().end());
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+    auto sorted = [](std::vector<InstanceId> ids) {
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    // Remove a middle root (r1) by parenting it under host, the current last
+    // element of roots_. This is exactly the swap branch: r1's slot is not
+    // the last slot, so removeRoot must move host into r1's old slot and
+    // repoint host's rootIndex_ entry there.
+    dom.setParent(r1, host);
+    CHECK(rootSet() == sorted({r0, r2, r3, host}));
+
+    // Remove another root (r0), forcing a second swap.
+    dom.setParent(r0, host);
+    CHECK(rootSet() == sorted({r2, r3, host}));
+
+    // host was the element swapped into a new slot above. Reparenting it now
+    // exercises removeRoot on an id whose rootIndex_ entry was rewritten by
+    // an earlier swap; a stale entry here would remove the wrong element (or
+    // index out of bounds) instead of host.
+    auto other = dom.create("Model");
+    dom.setParent(host, other);
+    CHECK(rootSet() == sorted({r2, r3, other}));
+    CHECK(dom.at(host).parent == other);
+
+    // Membership and content of the moved instances are unaffected by which
+    // slot they ended up in.
+    CHECK(dom.at(r1).parent == host);
+    CHECK(dom.at(r0).parent == host);
+    CHECK(dom.at(host).children.size() == 2);
 }
