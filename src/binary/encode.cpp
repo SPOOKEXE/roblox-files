@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -300,18 +301,24 @@ std::vector<PropPlan> buildPropPlans(const Dom& dom, const std::vector<ClassGrou
 // (which is also where a NetAssetRef-typed property's values now live, per
 // convertToWireForm) into the file's SSTR table, deduplicating exactly the
 // way encodeSharedString looks values up: by key and value together.
+//
+// The dedup key is the (value, key) pair itself, compared field-by-field via
+// std::pair's operator<, not a concatenation of the two strings. Both fields
+// are arbitrary binary data -- SharedString payloads include things like mesh
+// data -- so a single-byte delimiter between them is never actually safe: for
+// any delimiter byte chosen, some (value, key) pair can contain it and be
+// confused with a different pair split at a different point. A `std::map` on
+// the pair avoids inventing a delimiter at all.
 std::vector<SharedString> buildSharedStringTable(const std::vector<PropPlan>& plans) {
     std::vector<SharedString> table;
-    std::unordered_map<std::string, std::size_t> index;
+    std::map<std::pair<std::string, std::string>, std::size_t> index;
     for (const PropPlan& plan : plans) {
         if (plan.wireType != TypeId::SharedString) continue;
         for (const Variant& v : plan.values) {
             const SharedString& s = std::get<SharedString>(v);
-            std::string composite = s.value;
-            composite.push_back('\x1f');
-            composite += s.key;
-            if (index.find(composite) != index.end()) continue;
-            index.emplace(std::move(composite), table.size());
+            auto key = std::make_pair(s.value, s.key);
+            if (index.find(key) != index.end()) continue;
+            index.emplace(std::move(key), table.size());
             table.push_back(s);
         }
     }
