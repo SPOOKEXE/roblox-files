@@ -1854,7 +1854,7 @@ git commit -m "feat: add binary codecs for scalar property types"
 | OptionalCFrame | `0x1e` | a `0x10` byte, a CFrame array, a `0x02` byte, then a Bool array |
 | UniqueId | `0x1f` | none: 16-byte records, **interleaved at width 16** |
 | Font | `0x20` | none: per value `String` family, `u16` LE weight, `u8` style, `String` cachedFaceId |
-| Content | `0x22` | an `Enum` array of source types, then counted URI / object / external-object sections |
+| Content | `0x22` | a **zigzag** i32 array of source types (Int32 encoding, not Enum), then counted URI / object / external-object sections |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2135,7 +2135,7 @@ Notes on the cases that are easy to get wrong:
 - **OptionalCFrame.** The layout is literally: byte `0x10`, then the CFrame array for all values, then byte `0x02`, then the Bool array. Absent values still occupy a slot in the CFrame array and are written as the identity CFrame.
 - **UniqueId.** Each record is `index` as big-endian `u32`, `time` as big-endian `u32`, then `random` as a big-endian `i64` **rotated right by one bit** on read and rotated left by one on write. Build all records into a flat `count * 16` buffer, then interleave at width 16.
 - **PhysicalProperties.** Bit 0 means custom (6 or 5 floats follow), bit 1 means `AcousticAbsorption` is present. Bit 1 set with bit 0 clear means no floats at all. When bit 0 is set and bit 1 is clear, only five floats follow and `acousticAbsorption` defaults to `1.0`.
-- **Content.** The source-type array is a full `Enum` array (interleaved big-endian `u32`), and the three sections that follow are each a `u32` count plus that many entries. Object and external-object referents use the same accumulated referent encoding as type `0x13`. `ExternalObjectRefs` cannot be meaningful across files: decode and discard them, and always write a count of `0`.
+- **Content.** The source-type array uses the **Int32** encoding (zigzag, big-endian, interleaved), NOT the untransformed `Enum` encoding, despite the values being enum-like. Confirmed against `rbx_binary`, which calls `read_interleaved_i32_array` here. The corpus cannot settle this: every real `Content` in `temp/` is source-type `None`, and zigzag(0) == 0, so both encodings are byte-identical for it. The three sections that follow are each a `u32` count plus that many entries. Object and external-object referents use the same accumulated referent encoding as type `0x13`. `ExternalObjectRefs` cannot be meaningful across files: decode and discard them, and always write a count of `0`.
 
 - [ ] **Step 4: Run the tests**
 
@@ -3920,11 +3920,42 @@ git commit -m "test: add corpus round-trip suite and CFrame table validation"
 | `0x1f` | UniqueId | yes (16) | index BE `u32`, time BE `u32`, random BE `i64` rotated right 1 |
 | `0x20` | Font | no | String family, LE `u16` weight, `u8` style, String cachedFaceId |
 | `0x21` | SecurityCapabilities | yes (8) | Int64 encoding, reinterpreted as `u64`. Not in the published spec; confirmed against the rbx_binary implementation |
-| `0x22` | Content | mixed | Enum array of source types, then counted URI / object / external sections |
+| `0x22` | Content | mixed | **zigzag** big-endian i32 array of source types (the Int32 encoding, NOT the untransformed Enum encoding), then counted URI / object / external sections |
 
 ## A.2 CFrame special rotation ids
 
-Rotations are in degrees, applied in the order Y, then X, then Z. Build the matrices at compile time from exact trigonometric values; never call `std::cos` or `std::sin`.
+**Do not derive these matrices from the angle table below by Euler composition.** The angles
+are descriptive, not constructive: no standard composition order (`Rz*Rx*Ry`, `Ry*Rx*Rz`,
+`Rz*Ry*Rx`, and their transposes) reproduces the reference implementation's id-to-matrix
+assignment, and the closest any of them gets is 10 of 24. The reference derives ids
+algorithmically from per-axis normal ids as `(6 * xId) + yId + 1`, not from Euler angles.
+
+Use the explicit matrices below, verified element by element against `rbx_types`'
+`Matrix3::from_basic_rotation_id`. Each is row-major `R00 R01 R02 R10 R11 R12 R20 R21 R22`.
+Every entry is exactly `-1`, `0`, or `1`; never call `std::cos` or `std::sin` to build them,
+because a stray `6.1e-17` fails the exact-match test on encode and silently disables the
+whole special-case optimisation.
+
+| Id | Matrix | Id | Matrix |
+|:--|:--|:--|:--|
+| `0x02` | `1 0 0  0 1 0  0 0 1` | `0x14` | `-1 0 0  0 1 0  0 0 -1` |
+| `0x03` | `1 0 0  0 0 -1  0 1 0` | `0x15` | `-1 0 0  0 0 1  0 1 0` |
+| `0x05` | `1 0 0  0 -1 0  0 0 -1` | `0x17` | `-1 0 0  0 -1 0  0 0 1` |
+| `0x06` | `1 0 0  0 0 1  0 -1 0` | `0x18` | `-1 0 0  0 0 -1  0 -1 0` |
+| `0x07` | `0 1 0  1 0 0  0 0 -1` | `0x19` | `0 1 0  -1 0 0  0 0 1` |
+| `0x09` | `0 0 1  1 0 0  0 1 0` | `0x1b` | `0 0 -1  -1 0 0  0 1 0` |
+| `0x0a` | `0 -1 0  1 0 0  0 0 1` | `0x1c` | `0 -1 0  -1 0 0  0 0 -1` |
+| `0x0c` | `0 0 -1  1 0 0  0 -1 0` | `0x1e` | `0 0 1  -1 0 0  0 -1 0` |
+| `0x0d` | `0 1 0  0 0 1  1 0 0` | `0x1f` | `0 1 0  0 0 -1  -1 0 0` |
+| `0x0e` | `0 0 -1  0 1 0  1 0 0` | `0x20` | `0 0 1  0 1 0  -1 0 0` |
+| `0x10` | `0 -1 0  0 0 -1  1 0 0` | `0x22` | `0 -1 0  0 0 1  -1 0 0` |
+| `0x11` | `0 0 1  0 -1 0  1 0 0` | `0x23` | `0 0 -1  0 -1 0  -1 0 0` |
+
+Collectively these are exactly the 24 rotations of the cube (the octahedral group): the
+complete set of signed permutation matrices with determinant `+1`. That is a convention-free
+way to check a table without knowing the Euler convention, and Task 16 asserts it.
+
+The angle table below is retained only as the specification's own description of each id.
 
 | Id | Y, X, Z | Id | Y, X, Z |
 |:--|:--|:--|:--|
