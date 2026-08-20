@@ -15,7 +15,8 @@ add_executable(rbxl_tests
   test_xml_decode.cpp
   test_xml_encode.cpp
   test_api.cpp
-  test_blob.cpp)
+  test_blob.cpp
+  test_reflection.cpp)
 target_link_libraries(rbxl_tests PRIVATE rbxl rbxl_doctest rbxl_lz4 rbxl_zstd rbxl_pugixml)
 target_include_directories(rbxl_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(rbxl_tests PRIVATE RBXL_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/temp")

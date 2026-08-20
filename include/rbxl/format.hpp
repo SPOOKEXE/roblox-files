@@ -2,6 +2,7 @@
 #include <rbxl/result.hpp>
 #include <rbxl/dom.hpp>
 #include <rbxl/compression.hpp>
+#include <rbxl/reflection.hpp>
 #include <cstdint>
 #include <cstddef>
 #include <optional>
@@ -14,10 +15,6 @@
 namespace rbxl {
 
 enum class Format { Binary, Xml };
-
-// Forward-declared only; Task 14 defines it. SaveOptions::reflection is
-// always null until then.
-struct ReflectionDatabase;
 
 // Sniffs the container from its bytes. Binary files start with the literal
 // "<roblox!"; XML files have a <roblox> root, possibly preceded by a UTF-8

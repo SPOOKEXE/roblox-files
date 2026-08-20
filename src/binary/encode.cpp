@@ -113,14 +113,19 @@ bool wireTypeFor(VariantType type, TypeId& out) {
     }
 }
 
-// A zero-initialised value for `type`, used to fill in an instance missing a
-// property its classmates define. `reflection` is threaded through for
-// Task 14 to consult the spec-defined default instead; it is always null
-// until that task lands (and the pointer is otherwise unused here, since
-// ReflectionDatabase is only forward-declared), so this always falls back to
-// the zero value.
-Variant defaultValueFor(VariantType type, const ReflectionDatabase* /*reflection*/,
-                         const std::string& /*className*/, const std::string& /*propertyName*/) {
+// A value for `type` to fill in an instance missing a property its
+// classmates define. When `reflection` is supplied and knows a default for
+// (className, propertyName) of the expected type, that value is used;
+// otherwise (no database, an unknown default, or a default of some other
+// type) this falls back to a zero-initialised value of `type`.
+Variant defaultValueFor(VariantType type, const ReflectionDatabase* reflection,
+                         const std::string& className, const std::string& propertyName) {
+    if (reflection != nullptr) {
+        Variant fromDb = reflection->defaultValue(className, propertyName);
+        if (variantTypeOf(fromDb) == type) {
+            return fromDb;
+        }
+    }
     switch (type) {
         case VariantType::String: return std::string();
         case VariantType::Bool: return false;
@@ -194,14 +199,22 @@ void convertToWireForm(VariantType targetType, Variant& value) {
 // Groups every instance by (className, isService) in Dom pool order, so
 // class ids come out in first-appearance order and are therefore stable
 // across runs for the same Dom.
-std::vector<ClassGroup> groupByClass(const Dom& dom) {
+//
+// isService is resolved per instance before grouping: the Dom's own flag is
+// authoritative when true, and a supplied `reflection` is consulted only as
+// a fallback for instances that left it false, never as an override. This
+// keeps a caller's explicit statement about one class safe from a database
+// that is wrong about a different one.
+std::vector<ClassGroup> groupByClass(const Dom& dom, const ReflectionDatabase* reflection) {
     std::vector<ClassGroup> classes;
     std::unordered_map<std::string, std::size_t> indexByKey;
     const std::size_t total = dom.instanceCount();
     for (InstanceId id = 0; id < total; ++id) {
         const Instance& inst = dom.at(id);
+        const bool isService =
+            inst.isService || (reflection != nullptr && reflection->isService(inst.className));
         std::string key = inst.className;
-        key.push_back(inst.isService ? '\x01' : '\x00');
+        key.push_back(isService ? '\x01' : '\x00');
         auto it = indexByKey.find(key);
         std::size_t idx;
         if (it == indexByKey.end()) {
@@ -210,7 +223,7 @@ std::vector<ClassGroup> groupByClass(const Dom& dom) {
             ClassGroup group;
             group.classId = static_cast<uint32_t>(idx);
             group.className = inst.className;
-            group.isService = inst.isService;
+            group.isService = isService;
             classes.push_back(std::move(group));
         } else {
             idx = it->second;
@@ -471,7 +484,7 @@ Result<std::vector<uint8_t>> encode(const Dom& dom, const EncodeOptions& options
     EncodeDiagnostics localDiags;
     EncodeDiagnostics& diags = diagnosticsOut != nullptr ? *diagnosticsOut : localDiags;
 
-    std::vector<ClassGroup> classes = groupByClass(dom);
+    std::vector<ClassGroup> classes = groupByClass(dom, options.reflection);
     std::vector<PropPlan> plans = buildPropPlans(dom, classes, options, diags);
     std::vector<SharedString> sharedStrings = buildSharedStringTable(plans);
 

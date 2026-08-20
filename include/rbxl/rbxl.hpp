@@ -11,4 +11,5 @@
 #include <rbxl/dom.hpp>
 #include <rbxl/compression.hpp>
 #include <rbxl/version.hpp>
+#include <rbxl/reflection.hpp>
 #include <rbxl/format.hpp>
