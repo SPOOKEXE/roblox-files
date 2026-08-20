@@ -4,6 +4,7 @@
 #include <rbxl/compression.hpp>
 #include <cstdint>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,8 +30,16 @@ Result<Format> detectFormat(const uint8_t* data, std::size_t size);
 // Any other (or missing) suffix is ErrorCode::InvalidArgument.
 Result<Format> formatFromExtension(const std::string& path);
 
+// `format`'s default of nullopt means "infer": saveFile infers from the
+// path's extension (falling back to Binary, with a diagnostic, when the
+// extension is unrecognised); saveBuffer has no path to infer from, so
+// nullopt there simply means Binary. Assigning a plain Format still works
+// (`options.format = Format::Xml;`) since std::optional converts from its
+// value type. Every other field is independent of format resolution: changing
+// compression, level, pretty, or reflection never disables extension
+// inference.
 struct SaveOptions {
-    Format format = Format::Binary;
+    std::optional<Format> format;                     // nullopt = infer
     Compression compression = Compression::Zstd;
     int level = 3;
     bool pretty = true;                               // XML only
@@ -53,15 +62,17 @@ Result<Dom> loadBuffer(const uint8_t* data, std::size_t size);
 Result<Dom> loadFile(const std::string& path);
 
 // Encodes `dom` with the codec named by `options.format`, forwarding any
-// codec diagnostics into `*diagnostics` when non-null.
+// codec diagnostics into `*diagnostics` when non-null. `options.format ==
+// nullopt` means Binary: there is no path here to infer a format from.
 Result<std::vector<uint8_t>> saveBuffer(const Dom& dom, const SaveOptions& options,
                                          Diagnostics* diagnostics = nullptr);
 
-// Like saveBuffer, then writes the result to `path`. `options.format` is
-// honoured only when the caller has set it explicitly; see saveFile's
-// implementation comment for how that is distinguished from the
-// default-constructed SaveOptions{}, which instead defers to the path's
-// extension.
+// Like saveBuffer, then writes the result to `path`. When `options.format`
+// is nullopt, the format is inferred from `path`'s extension; when the
+// extension is unrecognised (or absent), it falls back to Binary and appends
+// a warning to `*diagnostics` (when non-null) naming the path and the
+// fallback. An explicitly set `options.format` is always honoured, even
+// against a mismatched extension.
 Status saveFile(const Dom& dom, const std::string& path, SaveOptions options = {},
                  Diagnostics* diagnostics = nullptr);
 

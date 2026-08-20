@@ -132,7 +132,10 @@ void appendWarnings(Diagnostics* diagnostics, std::vector<std::string>&& warning
 
 Result<std::vector<uint8_t>> saveBuffer(const Dom& dom, const SaveOptions& options,
                                          Diagnostics* diagnostics) {
-    if (options.format == Format::Binary) {
+    // No path to infer from here: an unset format means Binary.
+    Format format = options.format.value_or(Format::Binary);
+
+    if (format == Format::Binary) {
         binary::EncodeOptions opts;
         opts.compression = options.compression;
         opts.level = options.level;
@@ -153,19 +156,22 @@ Result<std::vector<uint8_t>> saveBuffer(const Dom& dom, const SaveOptions& optio
 
 Status saveFile(const Dom& dom, const std::string& path, SaveOptions options,
                  Diagnostics* diagnostics) {
-    // SaveOptions has no flag distinguishing "caller explicitly asked for
-    // Binary" from "caller left format at its default". We resolve that by
-    // treating the whole struct matching a fresh SaveOptions{} as "left at
-    // default": in that case the path's extension picks the format (falling
-    // back to the struct's own Binary default when the extension is
-    // unrecognised or absent). Any field the caller has changed -- format
-    // included -- is honoured as given, even against a mismatched extension.
-    bool isDefault = options.format == Format::Binary && options.compression == Compression::Zstd &&
-                      options.level == 3 && options.pretty == true && options.reflection == nullptr;
-    if (isDefault) {
+    // options.format == nullopt means "infer from the path's extension".
+    // This is independent of every other field: changing compression, level,
+    // pretty, or reflection never disables inference, and an explicitly set
+    // format (Binary or Xml) is always honoured, even against a mismatched
+    // extension.
+    if (!options.format.has_value()) {
         auto extFormat = formatFromExtension(path);
         if (extFormat) {
             options.format = extFormat.value();
+        } else {
+            options.format = Format::Binary;
+            if (diagnostics != nullptr) {
+                diagnostics->warnings.push_back(
+                    "saveFile: could not infer a format from the extension of \"" + path +
+                    "\"; defaulting to Binary");
+            }
         }
     }
 

@@ -1,7 +1,9 @@
 #include <doctest.h>
 #include <rbxl/rbxl.hpp>
 #include <cstdio>
+#include <fstream>
 #include <string>
+#include <vector>
 
 using namespace rbxl;
 
@@ -87,4 +89,54 @@ TEST_CASE("a missing file reports Io rather than crashing") {
     auto r = loadFile("definitely-not-here.rbxl");
     REQUIRE_FALSE(r);
     CHECK(r.error().code == ErrorCode::Io);
+}
+
+// Reads a file's raw bytes back and reports which container it sniffs as, so
+// tests can check what saveFile actually wrote on disk rather than relying
+// on loadFile's own (equally content-based) sniffing to mask a bug.
+static Format writtenFormatOf(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>{});
+    auto r = detectFormat(bytes.data(), bytes.size());
+    REQUIRE(r);
+    return r.value();
+}
+
+TEST_CASE("saveFile still infers format from the extension when an unrelated option changes") {
+    Dom dom;
+    auto id = dom.create("Part");
+    dom.setProperty(id, "Name", std::string("Unrelated"));
+
+    SaveOptions options;
+    options.level = 5;   // touches compression level only, not format
+    std::string path = "rbxl_api_test_unrelated.rbxmx";
+    REQUIRE(saveFile(dom, path, options));
+    CHECK(writtenFormatOf(path) == Format::Xml);
+    std::remove(path.c_str());
+}
+
+TEST_CASE("saveFile honours an explicit format over a mismatched extension") {
+    Dom dom;
+    auto id = dom.create("Part");
+    dom.setProperty(id, "Name", std::string("Explicit"));
+
+    SaveOptions options;
+    options.format = Format::Binary;
+    std::string path = "rbxl_api_test_explicit.rbxmx";
+    REQUIRE(saveFile(dom, path, options));
+    CHECK(writtenFormatOf(path) == Format::Binary);
+    std::remove(path.c_str());
+}
+
+TEST_CASE("saveFile falls back to Binary and warns on an unrecognised extension") {
+    Dom dom;
+    auto id = dom.create("Part");
+    dom.setProperty(id, "Name", std::string("Fallback"));
+
+    std::string path = "rbxl_api_test_fallback.txt";
+    Diagnostics diagnostics;
+    REQUIRE(saveFile(dom, path, {}, &diagnostics));
+    CHECK(writtenFormatOf(path) == Format::Binary);
+    CHECK(diagnostics.warnings.size() == 1);
+    std::remove(path.c_str());
 }
