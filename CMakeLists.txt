@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(RBXL_BUILD_CLI "Build the rbxl command line tool" OFF)   # Task 15 flips this to ON
+option(RBXL_BUILD_CLI "Build the rbxl command line tool" ON)
 option(RBXL_BUILD_TESTS "Build the test suite" ON)
 
 add_subdirectory(third_party)
