@@ -19,6 +19,8 @@ struct EncodeDiagnostics {
 // non-null, receives one warning per dropped `Dom::unknownChunks()` entry and
 // per property whose type has no XML representation, so a caller such as
 // `convert` can report what did not survive the trip.
+// String values containing bytes that XML cannot represent are written as
+// base64 BinaryString properties; decoding preserves the bytes in that type.
 Result<std::string> encode(const Dom& dom, bool pretty = true,
                             EncodeDiagnostics* diagnostics = nullptr);
 

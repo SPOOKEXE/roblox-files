@@ -24,6 +24,40 @@ namespace {
 
 uint64_t rotl64(uint64_t v) { return (v << 1) | (v >> 63); }
 
+// The binary String wire type can hold arbitrary bytes. Only valid UTF-8
+// containing XML 1.0 characters may be written as XML text.
+bool isXmlText(const std::string& text) {
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const auto first = static_cast<uint8_t>(text[pos++]);
+        uint32_t codepoint = first;
+        uint32_t minimum = 0;
+        std::size_t remaining = 0;
+        if (first >= 0xC2 && first <= 0xDF) {
+            codepoint = first & 0x1F; minimum = 0x80; remaining = 1;
+        } else if (first >= 0xE0 && first <= 0xEF) {
+            codepoint = first & 0x0F; minimum = 0x800; remaining = 2;
+        } else if (first >= 0xF0 && first <= 0xF4) {
+            codepoint = first & 0x07; minimum = 0x10000; remaining = 3;
+        } else if (first >= 0x80) {
+            return false;
+        }
+        if (remaining > text.size() - pos) return false;
+        for (std::size_t i = 0; i < remaining; ++i) {
+            const auto next = static_cast<uint8_t>(text[pos++]);
+            if ((next & 0xC0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (next & 0x3F);
+        }
+        if (codepoint < minimum) return false;
+        const bool allowed = codepoint == 9 || codepoint == 10 || codepoint == 13 ||
+            (codepoint >= 0x20 && codepoint <= 0xD7FF) ||
+            (codepoint >= 0xE000 && codepoint <= 0xFFFD) ||
+            (codepoint >= 0x10000 && codepoint <= 0x10FFFF);
+        if (!allowed) return false;
+    }
+    return true;
+}
+
 // --- Leaf text formatting ---------------------------------------------
 
 // %.9g / %.17g are the shortest fixed precisions that always round-trip an
@@ -318,9 +352,16 @@ void writeProperty(pugi::xml_node propsNode, InstanceId ownerId, const std::stri
     el.append_attribute("name").set_value(name.c_str());
 
     switch (type) {
-        case VariantType::String:
-            el.text().set(std::get<std::string>(value).c_str());
+        case VariantType::String: {
+            const auto& text = std::get<std::string>(value);
+            if (isXmlText(text)) {
+                el.text().set(text.c_str());
+            } else {
+                el.set_name("BinaryString");
+                el.text().set(base64Encode(reinterpret_cast<const uint8_t*>(text.data()), text.size()).c_str());
+            }
             break;
+        }
         case VariantType::ProtectedString:
             writeProtectedString(el, std::get<ProtectedString>(value).value);
             break;

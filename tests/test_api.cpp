@@ -140,3 +140,57 @@ TEST_CASE("saveFile falls back to Binary and warns on an unrecognised extension"
     CHECK(diagnostics.warnings.size() == 1);
     std::remove(path.c_str());
 }
+
+TEST_CASE("binary XML binary conversion preserves string bytes and script spacing") {
+    Dom dom;
+    auto first = dom.create("Folder");
+    auto second = dom.create("Folder");
+    dom.setProperty(first, "Name", std::string("First"));
+    dom.setProperty(second, "Name", std::string("Second"));
+    const std::string blob("\x01\0\xff payload", 11);
+    SUBCASE("text value precedes binary value") {
+        dom.setProperty(first, "AttributesSerialize", std::string());
+        dom.setProperty(second, "AttributesSerialize", blob);
+    }
+    SUBCASE("binary value precedes text value") {
+        dom.setProperty(first, "AttributesSerialize", blob);
+        dom.setProperty(second, "AttributesSerialize", std::string());
+    }
+    auto script = dom.create("ModuleScript");
+    dom.setProperty(script, "Name", std::string("Rules"));
+    const std::string source = "\nlocal Module = {}\n\nfunction Module.CanAct()\n\treturn true\nend\n\nreturn Module\n";
+    dom.setProperty(script, "Source", ProtectedString{source});
+
+    auto binary = saveBuffer(dom, {});
+    REQUIRE(binary);
+    auto loaded = loadBuffer(binary.value().data(), binary.value().size());
+    REQUIRE(loaded);
+    SaveOptions xmlOptions;
+    xmlOptions.format = Format::Xml;
+    auto xml = saveBuffer(loaded.value(), xmlOptions);
+    REQUIRE(xml);
+    const std::string xmlText(xml.value().begin(), xml.value().end());
+    CHECK(xmlText.find("<BinaryString name=\"AttributesSerialize\"") != std::string::npos);
+    CHECK(xmlText.find("&#01;") == std::string::npos);
+    auto fromXml = loadBuffer(xml.value().data(), xml.value().size());
+    REQUIRE(fromXml);
+    Diagnostics diagnostics;
+    auto backBytes = saveBuffer(fromXml.value(), {}, &diagnostics);
+    REQUIRE(backBytes);
+    CHECK(diagnostics.warnings.empty());
+    auto back = loadBuffer(backBytes.value().data(), backBytes.value().size());
+    REQUIRE(back);
+    for (InstanceId id : {first, second, script}) {
+        InstanceId restored = kNoInstance;
+        for (InstanceId candidate = 0; candidate < back.value().instanceCount(); ++candidate) {
+            if (back.value().nameOf(candidate) == dom.nameOf(id)) restored = candidate;
+        }
+        REQUIRE(restored != kNoInstance);
+        const char* property = id == script ? "Source" : "AttributesSerialize";
+        const auto* expected = loaded.value().getProperty(id, property);
+        const auto* actual = back.value().getProperty(restored, property);
+        REQUIRE(expected != nullptr);
+        REQUIRE(actual != nullptr);
+        CHECK(std::get<std::string>(*actual) == std::get<std::string>(*expected));
+    }
+}

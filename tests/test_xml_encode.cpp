@@ -136,6 +136,30 @@ TEST_CASE("a ProtectedString containing the CDATA terminator still round-trips")
           "local s = \"]]>\"");
 }
 
+TEST_CASE("strings that cannot be XML text preserve their bytes as BinaryString") {
+    const std::vector<std::string> payloads = {
+        std::string("before\0after", 12), std::string(1, '\x01'),
+        "\xff", "\xc0\x80", "\xe2\x82", "\xed\xa0\x80",
+        "\xef\xbf\xbe", "\xf4\x90\x80\x80",
+    };
+    for (const auto& payload : payloads) {
+        Dom dom;
+        auto id = dom.create("Folder");
+        dom.setProperty(id, "Bytes", payload);
+        Dom back = roundTrip(dom);
+        const auto* value = back.getProperty(0, "Bytes");
+        REQUIRE(value != nullptr);
+        REQUIRE(std::holds_alternative<BinaryString>(*value));
+        CHECK(std::get<BinaryString>(*value).data == std::vector<uint8_t>(payload.begin(), payload.end()));
+    }
+    Dom textDom;
+    auto id = textDom.create("StringValue");
+    const std::string text = "hello\t\n\xc3\xa9 \xf0\x9f\x98\x80";
+    textDom.setProperty(id, "Value", text);
+    Dom back = roundTrip(textDom);
+    CHECK(std::get<std::string>(*back.getProperty(0, "Value")) == text);
+}
+
 TEST_CASE("floats round-trip exactly through their text form") {
     Dom dom;
     auto id = dom.create("Part");

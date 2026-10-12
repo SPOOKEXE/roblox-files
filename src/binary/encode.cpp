@@ -69,14 +69,14 @@ const Variant* findProperty(const Instance& inst, NameId nameId) {
 // The wire type a given Variant alternative is written as. Returns false for
 // alternatives with no binary representation: Nil (an absent property, dealt
 // with separately by the reconciliation rule), and the XML-only types
-// (Vector2int16, Region3, Region3int16, EnumItem, ContentId, BinaryString,
-// ProtectedString) that this binary codec never decodes into a Dom in the
-// first place. NetAssetRef shares SharedString's wire format (see
-// types.hpp), so it maps to TypeId::SharedString; convertToWireForm below
-// performs the corresponding value conversion.
+// (Vector2int16, Region3, Region3int16, EnumItem, ContentId). BinaryString
+// and ProtectedString share String's wire format; NetAssetRef shares
+// SharedString's. convertToWireForm below lowers those value types.
 bool wireTypeFor(VariantType type, TypeId& out) {
     switch (type) {
         case VariantType::String: out = TypeId::String; return true;
+        case VariantType::BinaryString: out = TypeId::String; return true;
+        case VariantType::ProtectedString: out = TypeId::String; return true;
         case VariantType::Bool: out = TypeId::Bool; return true;
         case VariantType::Int32: out = TypeId::Int32; return true;
         case VariantType::Int64: out = TypeId::Int64; return true;
@@ -128,6 +128,8 @@ Variant defaultValueFor(VariantType type, const ReflectionDatabase* reflection,
     }
     switch (type) {
         case VariantType::String: return std::string();
+        case VariantType::BinaryString: return BinaryString{};
+        case VariantType::ProtectedString: return ProtectedString{};
         case VariantType::Bool: return false;
         case VariantType::Int32: return int32_t(0);
         case VariantType::Int64: return int64_t(0);
@@ -164,11 +166,21 @@ Variant defaultValueFor(VariantType type, const ReflectionDatabase* reflection,
     }
 }
 
-// The two lossless conversions the heterogeneous-property rule names: a
-// narrower Int32 fits Int64 exactly, and Color3uint8's 0..255 channels map
-// exactly onto Color3's 0..1 floats. Anything else is not attempted; the
-// caller falls back to the type's default and records a warning.
+// String subtypes share identical wire bytes. The numeric conversions are
+// Int32 to Int64 and Color3uint8 to Color3; other mismatches warn and default.
 bool coerceLossless(const Variant& src, VariantType targetType, Variant& out) {
+    if (targetType == VariantType::String || targetType == VariantType::BinaryString ||
+        targetType == VariantType::ProtectedString) {
+        std::string bytes;
+        if (const auto* text = std::get_if<std::string>(&src)) bytes = *text;
+        else if (const auto* text = std::get_if<ProtectedString>(&src)) bytes = text->value;
+        else if (const auto* blob = std::get_if<BinaryString>(&src)) bytes.assign(blob->data.begin(), blob->data.end());
+        else return false;
+        if (targetType == VariantType::String) out = std::move(bytes);
+        else if (targetType == VariantType::ProtectedString) out = ProtectedString{std::move(bytes)};
+        else out = BinaryString{std::vector<uint8_t>(bytes.begin(), bytes.end())};
+        return true;
+    }
     if (targetType == VariantType::Int64) {
         if (const int32_t* i = std::get_if<int32_t>(&src)) {
             out = static_cast<int64_t>(*i);
@@ -183,16 +195,18 @@ bool coerceLossless(const Variant& src, VariantType targetType, Variant& out) {
     return false;
 }
 
-// NetAssetRef and SharedString share a wire format (see types.hpp), but
-// encodeValueArray's SharedString path only accepts the SharedString
-// alternative. Once a property's reconciled type is NetAssetRef, every
-// value in it (original, defaulted, or otherwise) is itself a NetAssetRef;
-// converting here lets the rest of the pipeline treat it as plain
-// SharedString from this point on.
+// Lower the reconciled string subtypes to the alternatives accepted by
+// encodeValueArray, preserving every byte, including embedded nulls.
 void convertToWireForm(VariantType targetType, Variant& value) {
     if (targetType == VariantType::NetAssetRef) {
         const NetAssetRef& n = std::get<NetAssetRef>(value);
         value = SharedString{n.key, n.value};
+    } else if (targetType == VariantType::BinaryString) {
+        const auto& bytes = std::get<BinaryString>(value).data;
+        value = std::string(bytes.begin(), bytes.end());
+    } else if (targetType == VariantType::ProtectedString) {
+        auto text = std::move(std::get<ProtectedString>(value).value);
+        value = std::move(text);
     }
 }
 
