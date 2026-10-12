@@ -2,6 +2,7 @@
 #include <rbxl/blob.hpp>
 #include <rbxl/bitutil.hpp>
 #include <rbxl/rbxl.hpp>
+#include <fstream>
 #include <set>
 #include <string>
 
@@ -152,6 +153,11 @@ TEST_CASE("corpus: every AttributesSerialize blob in the real place round-trips"
     // reach any code path the first copy did not.
     const std::string path =
         std::string(RBXL_TEST_DATA_DIR) + "/place 101949297449238 Build An Island.rbxlx";
+    std::ifstream fixture(path, std::ios::binary);
+    if (!fixture) {
+        MESSAGE("Skipping optional corpus fixture: " << path);
+        return;
+    }
     auto loaded = loadFile(path);
     REQUIRE(loaded);
     const Dom& dom = loaded.value();
