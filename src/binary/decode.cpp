@@ -73,7 +73,8 @@ Status decodeSstr(const std::vector<uint8_t>& data, std::vector<SharedString>& t
 // and records fileReferent -> InstanceId in `referents`.
 Status decodeInst(const std::vector<uint8_t>& data, Dom& dom,
                    std::unordered_map<uint32_t, ClassInfo>& classes,
-                   std::unordered_map<uint32_t, InstanceId>& referents) {
+                   std::unordered_map<uint32_t, InstanceId>& referents,
+                   const std::unordered_map<uint32_t, size_t>& propsPerClass) {
     Cursor c(data.data(), data.size());
     RBXL_TRY(classIdBytes, c.take(4));
     const uint32_t classId = bit::readU32LE(classIdBytes);
@@ -91,11 +92,17 @@ Status decodeInst(const std::vector<uint8_t>& data, Dom& dom,
         markers = markerBytes;
     }
 
+    // Each PROP chunk of this class adds one entry to every instance, so the
+    // lists are sized once here rather than doubling while values arrive.
+    const auto props = propsPerClass.find(classId);
+    const size_t expected = props == propsPerClass.end() ? 0 : props->second;
+
     ClassInfo info;
     info.className = className;
     info.ids.reserve(instanceCount);
     for (uint32_t i = 0; i < instanceCount; ++i) {
         InstanceId id = dom.create(className);
+        dom.at(id).properties.reserve(expected);
         if (markers != nullptr) {
             dom.at(id).isService = markers[i] != 0;
         }
@@ -335,6 +342,21 @@ Result<Dom> decode(const uint8_t* data, size_t size) {
 
     bool sawPrnt = false;
 
+    // A first pass counts PROP chunks per class, keeping nothing else, so
+    // every instance's property list can be sized when it is created. Each
+    // chunk is decompressed twice; holding them all instead would let a
+    // hostile file's compression ratio decide how much memory is resident.
+    std::unordered_map<uint32_t, size_t> propsPerClass;
+    for (size_t scan = cursor; scan < size;) {
+        RBXL_TRY(chunk, readChunk(data, size, scan));
+        if (std::memcmp(chunk.name, "END\0", 4) == 0) {
+            break;
+        }
+        if (std::memcmp(chunk.name, "PROP", 4) == 0 && chunk.data.size() >= 4) {
+            ++propsPerClass[bit::readU32LE(chunk.data.data())];
+        }
+    }
+
     while (cursor < size) {
         RBXL_TRY(chunk, readChunk(data, size, cursor));
 
@@ -343,7 +365,7 @@ Result<Dom> decode(const uint8_t* data, size_t size) {
         } else if (std::memcmp(chunk.name, "SSTR", 4) == 0) {
             RBXL_TRY_VOID(decodeSstr(chunk.data, sharedStrings));
         } else if (std::memcmp(chunk.name, "INST", 4) == 0) {
-            RBXL_TRY_VOID(decodeInst(chunk.data, dom, classes, referents));
+            RBXL_TRY_VOID(decodeInst(chunk.data, dom, classes, referents, propsPerClass));
         } else if (std::memcmp(chunk.name, "PROP", 4) == 0) {
             RBXL_TRY_VOID(decodeProp(chunk.data, dom, classes, ctx));
         } else if (std::memcmp(chunk.name, "PRNT", 4) == 0) {
