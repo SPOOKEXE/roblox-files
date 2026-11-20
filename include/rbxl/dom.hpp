@@ -68,6 +68,18 @@ public:
 
     // --- Properties --------------------------------------------------------
     void setProperty(InstanceId id, const std::string& name, Variant value);
+    // Same, with a name already interned through names(). A decoder setting
+    // one property on many instances interns its name once.
+    void setProperty(InstanceId id, NameId name, Variant value);
+
+    // Bulk loading: appends without keeping the property list sorted, which
+    // makes each set O(1) instead of an insert into the middle of a vector.
+    // Call sortProperties() once afterwards; until then getProperty and
+    // setProperty must not be used on these instances.
+    void appendPropertyUnsorted(InstanceId id, NameId name, Variant value);
+    // Restores sorted property lists after appendPropertyUnsorted. When a
+    // name was appended twice for one instance, the last value wins.
+    void sortProperties();
     const Variant* getProperty(InstanceId id, const std::string& name) const;
     // Convenience over the "Name" property; empty string when unset.
     std::string nameOf(InstanceId id) const;

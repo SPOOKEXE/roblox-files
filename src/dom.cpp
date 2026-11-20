@@ -84,7 +84,10 @@ void Dom::setParent(InstanceId child, InstanceId parent) {
 }
 
 void Dom::setProperty(InstanceId id, const std::string& name, Variant value) {
-    NameId nameId = names_.intern(name);
+    setProperty(id, names_.intern(name), std::move(value));
+}
+
+void Dom::setProperty(InstanceId id, NameId nameId, Variant value) {
     auto& props = instances_[id].properties;
     auto it = std::lower_bound(props.begin(), props.end(), nameId,
         [](const std::pair<NameId, Variant>& entry, NameId key) {
@@ -94,6 +97,30 @@ void Dom::setProperty(InstanceId id, const std::string& name, Variant value) {
         it->second = std::move(value);
     } else {
         props.emplace(it, nameId, std::move(value));
+    }
+}
+
+void Dom::appendPropertyUnsorted(InstanceId id, NameId nameId, Variant value) {
+    instances_[id].properties.emplace_back(nameId, std::move(value));
+}
+
+void Dom::sortProperties() {
+    for (Instance& instance : instances_) {
+        auto& props = instance.properties;
+        std::stable_sort(props.begin(), props.end(),
+            [](const auto& left, const auto& right) { return left.first < right.first; });
+        // Keep the last of each run of equal names, matching setProperty.
+        size_t write = 0;
+        for (size_t read = 0; read < props.size(); ++read) {
+            if (read + 1 < props.size() && props[read + 1].first == props[read].first) {
+                continue;
+            }
+            if (write != read) {
+                props[write] = std::move(props[read]);
+            }
+            ++write;
+        }
+        props.erase(props.begin() + static_cast<std::ptrdiff_t>(write), props.end());
     }
 }
 

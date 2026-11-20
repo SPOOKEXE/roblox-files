@@ -142,6 +142,22 @@ TEST_CASE("a PROP chunk holding only a name is preserved verbatim") {
     CHECK(unknown[0].data == payload);
 }
 
+TEST_CASE("a property written twice keeps its last value") {
+    auto file = buildMinimalFile();
+    std::vector<uint8_t> prefix(file.begin(), file.end() - (16 + 9));
+    std::vector<uint8_t> again;
+    putU32(again, 0); putString(again, "Name"); again.push_back(0x01);
+    putString(again, "Renamed");
+    REQUIRE(writeChunk(prefix, "PROP", again, Compression::None, 0));
+    prefix.insert(prefix.end(), file.end() - (16 + 9), file.end());
+
+    auto result = decode(prefix.data(), prefix.size());
+    REQUIRE(result);
+    Dom& dom = result.value();
+    CHECK(dom.nameOf(dom.roots()[0]) == "Renamed");
+    CHECK(dom.at(dom.roots()[0]).properties.size() == 1);
+}
+
 TEST_CASE("unrecognised chunk names are preserved verbatim") {
     auto file = buildMinimalFile();
     // Insert a chunk with a name no decoder knows, just before END.

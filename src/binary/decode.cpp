@@ -156,8 +156,9 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
     // corpus file, copying every decoded Variant into place would double
     // the string/vector allocation traffic for no reason -- `values` is
     // discarded right after this loop.
+    const NameId nameId = dom.names().intern(propertyName);
     for (size_t i = 0; i < values.size(); ++i) {
-        dom.setProperty(info.ids[i], propertyName, std::move(values[i]));
+        dom.appendPropertyUnsorted(info.ids[i], nameId, std::move(values[i]));
     }
     return Status();
 }
@@ -361,6 +362,7 @@ Result<Dom> decode(const uint8_t* data, size_t size) {
         }
     }
 
+    dom.sortProperties();
     RBXL_TRY_VOID(remapReferents(dom, referents));
 
     return dom;
