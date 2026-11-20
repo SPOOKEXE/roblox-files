@@ -116,8 +116,6 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
     RBXL_TRY(classIdBytes, c.take(4));
     const uint32_t classId = bit::readU32LE(classIdBytes);
     RBXL_TRY(propertyName, readString(c));
-    RBXL_TRY(typeIdBytes, c.take(1));
-    const uint8_t typeId = typeIdBytes[0];
 
     auto classIt = classes.find(classId);
     if (classIt == classes.end()) {
@@ -126,7 +124,17 @@ Status decodeProp(const std::vector<uint8_t>& data, Dom& dom,
     }
     const ClassInfo& info = classIt->second;
 
-    if (!isKnownTypeId(typeId)) {
+    // Recent Studio builds write some PROP chunks (seen: WorldPivotInternal)
+    // as a name with no type byte and no values. They are preserved like an
+    // unknown type rather than refusing the whole file.
+    const bool nameOnly = c.remaining() == 0;
+    uint8_t typeId = 0;
+    if (!nameOnly) {
+        RBXL_TRY(typeIdBytes, c.take(1));
+        typeId = typeIdBytes[0];
+    }
+
+    if (nameOnly || !isKnownTypeId(typeId)) {
         RawChunk raw;
         std::memcpy(raw.name, "PROP", 4);
         raw.className = info.className;

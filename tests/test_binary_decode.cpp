@@ -124,6 +124,24 @@ TEST_CASE("unknown property type ids are preserved verbatim") {
     CHECK_FALSE(dom.unknownChunks()[0].className.empty());
 }
 
+TEST_CASE("a PROP chunk holding only a name is preserved verbatim") {
+    // Recent Studio writes WorldPivotInternal this way: class id and name,
+    // then nothing.
+    auto file = buildMinimalFile();
+    std::vector<uint8_t> prefix(file.begin(), file.end() - (16 + 9));
+    std::vector<uint8_t> payload;
+    putU32(payload, 0); putString(payload, "WorldPivotInternal");
+    REQUIRE(writeChunk(prefix, "PROP", payload, Compression::None, 0));
+    prefix.insert(prefix.end(), file.end() - (16 + 9), file.end());
+
+    auto result = decode(prefix.data(), prefix.size());
+    REQUIRE(result);
+    auto& unknown = result.value().unknownChunks();
+    REQUIRE(unknown.size() == 1);
+    CHECK(std::memcmp(unknown[0].name, "PROP", 4) == 0);
+    CHECK(unknown[0].data == payload);
+}
+
 TEST_CASE("unrecognised chunk names are preserved verbatim") {
     auto file = buildMinimalFile();
     // Insert a chunk with a name no decoder knows, just before END.
